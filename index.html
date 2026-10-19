@@ -351,6 +351,59 @@ section{
 }
 
 
+/* RANKING DE DESAFIOS */
+.challenge-box {
+    max-width: 900px;
+    margin: auto;
+    overflow: hidden;
+    background: rgba(3, 14, 32, .88);
+    border: 1px solid rgba(0, 153, 255, .35);
+    box-shadow: 0 0 40px rgba(0, 0, 0, .3);
+}
+
+.challenge-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.challenge-table th {
+    padding: 18px 15px;
+    background: rgba(0, 136, 255, .12);
+    color: #00aaff;
+    font-size: 14px;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(0, 153, 255, .3);
+}
+
+.challenge-table td {
+    padding: 17px 15px;
+    border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+
+.challenge-table tbody tr:hover {
+    background: rgba(0, 153, 255, .08);
+}
+
+.challenge-position {
+    width: 120px;
+    text-align: center;
+    color: #ffd84d;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.challenge-player {
+    color: white;
+    font-weight: 700;
+}
+
+@media (max-width: 600px) {
+    .challenge-table th,
+    .challenge-table td {
+        padding: 12px 10px;
+    }
+}
+
 /* HISTÓRICO */
 
 .history-box{
@@ -914,6 +967,7 @@ section{
         <a href="#inicio">INÍCIO</a>
 
         <a href="#ranking">RANKING</a>
+<a href="#desafios">DESAFIOS</a>
 
         <a href="#historico">HISTÓRICO</a>
 
@@ -922,6 +976,7 @@ section{
         <a href="#jogadores">JOGADORES</a>
 
         <a href="#elo">ELO</a>
+<a href="/admin">ADMIN</a>
 
     </nav>
 
@@ -1063,6 +1118,36 @@ section{
 
 </section>
 
+
+<!-- RANKING DE DESAFIOS -->
+<section id="desafios">
+    <div class="section-title">
+        <h2>RANKING DE DESAFIOS</h2>
+        <p>Classificação independente por posição. Desafie quem está acima de você!</p>
+    </div>
+
+    <div class="status" id="challenge-status">
+        Carregando ranking de desafios...
+    </div>
+
+    <div class="challenge-box">
+        <table class="challenge-table">
+            <thead>
+                <tr>
+                    <th>POSIÇÃO</th>
+                    <th>JOGADOR</th>
+                </tr>
+            </thead>
+            <tbody id="challenge-ranking-body">
+                <tr>
+                    <td colspan="2" style="text-align:center">
+                        Carregando jogadores...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
 
 <!-- HISTÓRICO -->
 
@@ -3424,12 +3509,86 @@ document.addEventListener(
 );
 
 
+/* RANKING DE DESAFIOS */
+async function atualizarRankingDesafios() {
+    const status = document.getElementById("challenge-status");
+    const corpo = document.getElementById("challenge-ranking-body");
+
+    if (!status || !corpo) return;
+
+    try {
+        const resposta = await fetch("/api/challenge-ranking", {
+            cache: "no-store"
+        });
+
+        if (!resposta.ok) {
+            throw new Error("HTTP " + resposta.status);
+        }
+
+        const jogadores = await resposta.json();
+
+        if (!Array.isArray(jogadores)) {
+            throw new Error("Formato de dados inválido.");
+        }
+
+        corpo.replaceChildren();
+
+        if (jogadores.length === 0) {
+            const linha = document.createElement("tr");
+            const celula = document.createElement("td");
+
+            celula.colSpan = 2;
+            celula.style.textAlign = "center";
+            celula.textContent = "Ainda não há jogadores cadastrados.";
+
+            linha.appendChild(celula);
+            corpo.appendChild(linha);
+            status.textContent = "Ranking de desafios conectado.";
+            return;
+        }
+
+        jogadores.forEach((jogador, indice) => {
+            const linha = document.createElement("tr");
+            const posicao = document.createElement("td");
+            const nome = document.createElement("td");
+
+            posicao.className = "challenge-position";
+            posicao.textContent = jogador.rank_position ?? indice + 1;
+
+            nome.className = "challenge-player";
+            nome.textContent = jogador.player_name ?? "Jogador";
+
+            linha.append(posicao, nome);
+            corpo.appendChild(linha);
+        });
+
+        status.textContent =
+            jogadores.length + " jogador(es) no ranking de desafios.";
+    } catch (erro) {
+        console.error("Erro no ranking de desafios:", erro);
+        status.textContent = "Não foi possível carregar o ranking de desafios.";
+
+        corpo.replaceChildren();
+
+        const linha = document.createElement("tr");
+        const celula = document.createElement("td");
+
+        celula.colSpan = 2;
+        celula.style.textAlign = "center";
+        celula.textContent = "Erro ao carregar. Tente novamente mais tarde.";
+
+        linha.appendChild(celula);
+        corpo.appendChild(linha);
+    }
+}
+
 /* =========================================================
    INICIAR
    ========================================================= */
 
 atualizarRanking();
 
+atualizarRankingDesafios();
 atualizarHistorico();
 
 
@@ -3447,6 +3606,8 @@ setInterval(
     atualizarHistorico,
     30000
 );
+
+setInterval(atualizarRankingDesafios, 30000);
 
 </script>
 

@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Administração | Academia Storm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #07111f;
+      color: #eaf2ff;
+      font-family: Rajdhani, sans-serif;
+      padding: 24px;
+    }
+    main { max-width: 950px; margin: auto; }
+    h1 { color: #57b8ff; text-transform: uppercase; }
+    .panel {
+      background: #101e31;
+      border: 1px solid #263b57;
+      border-radius: 12px;
+      padding: 22px;
+      margin: 18px 0;
+    }
+    input, button {
+      font: inherit;
+      padding: 10px 12px;
+      border-radius: 7px;
+      border: 1px solid #354e6d;
+    }
+    input {
+      background: #081526;
+      color: white;
+      width: 100%;
+      margin: 5px 0 12px;
+    }
+    button {
+      cursor: pointer;
+      background: #167ac0;
+      color: white;
+      font-weight: 700;
+      margin: 3px;
+    }
+    button:hover { background: #2499e9; }
+    .danger { background: #a72e3d; }
+    .secondary { background: #34445a; }
+    .hidden { display: none !important; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 120px auto;
+      gap: 8px;
+      align-items: end;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      padding: 10px 7px;
+      border-bottom: 1px solid #263b57;
+      text-align: left;
+    }
+    th { color: #57b8ff; }
+    .actions { white-space: nowrap; }
+    #message { min-height: 25px; color: #8ed1ff; }
+    .muted { color: #9fb2cc; }
+    @media(max-width: 600px) {
+      body { padding: 12px; }
+      .form-grid { grid-template-columns: 1fr; }
+      table { font-size: 14px; }
+      th, td { padding: 7px 4px; }
+      .actions { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Academia Storm</h1>
+  <p class="muted">Painel administrativo do ranking de desafios</p>
+
+  <section id="loginPanel" class="panel">
+    <h2>Entrar como administrador</h2>
+    <form id="loginForm">
+      <label for="username">Usuário</label>
+      <input id="username" autocomplete="username" required maxlength="100">
+      <label for="password">Senha</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Entrar</button>
+    </form>
+  </section>
+
+  <section id="adminPanel" class="hidden">
+    <div class="panel">
+      <h2>Adicionar jogador</h2>
+      <form id="addForm" class="form-grid">
+        <div>
+          <label for="playerName">Nome do jogador</label>
+          <input id="playerName" maxlength="60" required>
+        </div>
+        <div>
+          <label for="position">Posição</label>
+          <input id="position" type="number" min="1" step="1" value="1" required>
+        </div>
+        <button type="submit">Adicionar</button>
+      </form>
+      <p class="muted">A posição escolhida será ocupada pelo novo jogador; os demais serão deslocados.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Gerenciar ranking</h2>
+      <p class="muted">Use as setas para mudar a posição ou edite o nome.</p>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Pos.</th>
+              <th>Jogador</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="playersBody">
+            <tr><td colspan="3">Carregando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <button id="logoutButton" class="secondary">Sair</button>
+  </section>
+
+  <p id="message" role="status" aria-live="polite"></p>
+  <p><a href="/" style="color:#57b8ff">Voltar para a página principal</a></p>
+</main>
+
+<script>
+  const loginPanel = document.getElementById("loginPanel");
+  const adminPanel = document.getElementById("adminPanel");
+  const message = document.getElementById("message");
+  const playersBody = document.getElementById("playersBody");
+
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.message || "Erro na solicitação.");
+    }
+    return data;
+  }
+
+  function notify(text) {
+    message.textContent = text;
+  }
+
+  async function checkSession() {
+    try {
+      const data = await api("/api/admin/session");
+      loginPanel.classList.toggle("hidden", data.authenticated);
+      adminPanel.classList.toggle("hidden", !data.authenticated);
+      if (data.authenticated) await loadPlayers();
+    } catch {
+      notify("Não foi possível verificar a sessão. Confira a conexão com o servidor.");
+    }
+  }
+
+  document.getElementById("loginForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    notify("Entrando...");
+    try {
+      await api("/api/admin/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value
+        })
+      });
+      document.getElementById("password").value = "";
+      notify("Login realizado.");
+      await checkSession();
+    } catch (error) {
+      notify(error.message);
+    }
+  });
+
+  async function loadPlayers() {
+    playersBody.replaceChildren();
+    try {
+      const players = await api("/api/challenge-ranking");
+
+      if (!players.length) {
+        const row = playersBody.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 3;
+        cell.textContent = "Nenhum jogador cadastrado.";
+        return;
+      }
+
+      players.forEach((player, index) => {
+        const row = playersBody.insertRow();
+
+        const positionCell = row.insertCell();
+        positionCell.textContent = player.rank_position;
+
+        const nameCell = row.insertCell();
+        const nameInput = document.createElement("input");
+        nameInput.value = player.player_name;
+        nameInput.maxLength = 60;
+        nameInput.setAttribute("aria-label", "Nome do jogador");
+        nameCell.appendChild(nameInput);
+
+        const actionsCell = row.insertCell();
+        actionsCell.className = "actions";
+
+        const saveButton = document.createElement("button");
+        saveButton.textContent = "Salvar nome";
+        saveButton.addEventListener("click", async () => {
+          const newName = nameInput.value.trim();
+          if (!newName || newName.length > 60) {
+            notify("Digite um nome de até 60 caracteres.");
+            return;
+          }
+          try {
+            await api("/api/admin/challenge-ranking/" + player.id, {
+              method: "PATCH",
+              body: JSON.stringify({ player_name: newName })
+            });
+            notify("Nome salvo.");
+            await loadPlayers();
+          } catch (error) {
+            notify(error.message);
+          }
+        });
+
+        const upButton = document.createElement("button");
+        upButton.textContent = "↑";
+        upButton.title = "Mover para cima";
+        upButton.disabled = index === 0;
+        upButton.addEventListener("click", () => movePlayer(index, -1));
+
+        const downButton = document.createElement("button");
+        downButton.textContent = "↓";
+        downButton.title = "Mover para baixo";
+        downButton.disabled = index === players.length - 1;
+        downButton.addEventListener("click", () => movePlayer(index, 1));
+
+        const deleteButton = document.createElement("button");
+        deleteButton.textContent = "Excluir";
+        deleteButton.className = "danger";
+        deleteButton.addEventListener("click", async () => {
+          if (!confirm("Tem certeza que deseja excluir " + player.player_name + "?")) return;
+          try {
+            await api("/api/admin/challenge-ranking/" + player.id, {
+              method: "DELETE"
+            });
+            notify("Jogador excluído.");
+            await loadPlayers();
+          } catch (error) {
+            notify(error.message);
+          }
+        });
+
+        actionsCell.append(saveButton, upButton, downButton, deleteButton);
+      });
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  async function movePlayer(index, direction) {
+    try {
+      const players = await api("/api/challenge-ranking");
+      const target = index + direction;
+      if (target < 0 || target >= players.length) return;
+
+      [players[index], players[target]] = [players[target], players[index]];
+
+      await api("/api/admin/challenge-ranking/reorder", {
+        method: "PUT",
+        body: JSON.stringify({ ids: players.map(player => player.id) })
+      });
+
+      notify("Posições atualizadas.");
+      await loadPlayers();
+    } catch (error) {
+      notify(error.message);
+    }
+  }
+
+  document.getElementById("addForm").addEventListener("submit", async event => {
+    event.preventDefault();
+
+    try {
+      await api("/api/admin/challenge-ranking", {
+        method: "POST",
+        body: JSON.stringify({
+          player_name: document.getElementById("playerName").value.trim(),
+          rank_position: Number(document.getElementById("position").value)
+        })
+      });
+
+      document.getElementById("playerName").value = "";
+      notify("Jogador adicionado.");
+      await loadPlayers();
+    } catch (error) {
+      notify(error.message);
+    }
+  });
+
+  document.getElementById("logoutButton").addEventListener("click", async () => {
+    try {
+      await api("/api/admin/logout", { method: "POST" });
+      loginPanel.classList.remove("hidden");
+      adminPanel.classList.add("hidden");
+      notify("Você saiu da área administrativa.");
+    } catch (error) {
+      notify(error.message);
+    }
+  });
+
+  checkSession();
+</script>
+</body>
+</html>
