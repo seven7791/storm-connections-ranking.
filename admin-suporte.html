@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Central de Suporte | Academia Storm</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    * { box-sizing: border-box; }
+
+    :root {
+      --bg: #07111f;
+      --panel: #101e31;
+      --panel2: #0b192c;
+      --border: #263b57;
+      --text: #eaf2ff;
+      --muted: #9fb2cc;
+      --blue: #57b8ff;
+      --cyan: #43d9ff;
+      --purple: #9870ff;
+      --red: #ff6379;
+      --green: #58e0a5;
+      --yellow: #ffd166;
+    }
+
+    body {
+      margin: 0;
+      padding: 22px;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse at top, #14284a 0%, transparent 55%),
+        var(--bg);
+      font-family: 'Rajdhani', sans-serif;
+    }
+
+    main {
+      max-width: 1400px;
+      margin: auto;
+    }
+
+    a {
+      color: var(--cyan);
+      text-decoration: none;
+    }
+
+    a:hover { text-decoration: underline; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 15px;
+      margin-bottom: 24px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--blue);
+      font-size: clamp(28px, 5vw, 42px);
+      text-transform: uppercase;
+    }
+
+    h2 { margin-top: 0; }
+
+    .muted { color: var(--muted); }
+
+    .header-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    .panel {
+      background: rgba(16, 30, 49, .97);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 17px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-heading h2 {
+      font-size: 23px;
+      margin: 0;
+    }
+
+    .panel-content { padding: 17px; }
+
+    button, input, select, textarea {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 10px 14px;
+      background: #167ac0;
+      color: white;
+      font-weight: 700;
+      transition: background .15s;
+    }
+
+    button:hover { background: #2499e9; }
+
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .secondary {
+      background: #34445a;
+      border-color: #506783;
+    }
+
+    .secondary:hover { background: #465c78; }
+
+    .danger {
+      background: #a72e3d;
+      border-color: #c64b5d;
+    }
+
+    .danger:hover { background: #d13a4e; }
+
+    .purple {
+      background: #6941c6;
+      border-color: #9570ef;
+    }
+
+    .purple:hover { background: #8058df; }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 11px 12px;
+      color: var(--text);
+      background: #081526;
+      border: 1px solid #354e6d;
+      border-radius: 7px;
+      outline: none;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--cyan);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-bottom: 15px;
+    }
+
+    .filters select {
+      flex: 1;
+      min-width: 160px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 390px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .ticket-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 720px;
+      overflow-y: auto;
+      padding: 14px;
+    }
+
+    .ticket-item {
+      display: block;
+      width: 100%;
+      margin: 0;
+      text-align: left;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 13px;
+      border-radius: 9px;
+    }
+
+    .ticket-item:hover { background: #14243e; }
+
+    .ticket-item.selected {
+      border-color: var(--cyan);
+      box-shadow: 0 0 0 1px var(--cyan);
+      background: #14243e;
+    }
+
+    .ticket-title {
+      display: block;
+      font-size: 19px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .ticket-meta {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 3px 8px;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 700;
+      background: #26344e;
+    }
+
+    .status.aberto { color: var(--yellow); }
+    .status.atendimento { color: var(--cyan); }
+    .status.resolvido { color: var(--green); }
+
+    .empty {
+      padding: 28px 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .detail-header h2 {
+      margin-bottom: 6px;
+      overflow-wrap: anywhere;
+    }
+
+    .details {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 18px 0;
+    }
+
+    .detail-box {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel2);
+      overflow-wrap: anywhere;
+    }
+
+    .detail-box small {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+    }
+
+    .detail-box strong { overflow-wrap: anywhere; }
+
+    .status-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .status-form .field {
+      flex: 1;
+      min-width: 170px;
+    }
+
+    .messages {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 450px;
+      overflow-y: auto;
+      margin: 16px 0;
+      padding-right: 4px;
+    }
+
+    .message {
+      padding: 13px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--panel2);
+    }
+
+    .message.admin {
+      background: #172344;
+      border-color: #554a91;
+    }
+
+    .message-top {
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .message-body {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+      font-size: 17px;
+    }
+
+    .reply-form {
+      margin-top: 20px;
+      padding-top: 17px;
+      border-top: 1px solid var(--border);
+    }
+
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .feedback {
+      display: none;
+      margin: 14px 0;
+      padding: 12px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .feedback.error {
+      display: block;
+      color: #ffd9df;
+      background: #4b1926;
+      border: 1px solid #8f3148;
+    }
+
+    .feedback.ok {
+      display: block;
+      color: #c7ffe5;
+      background: #123c30;
+      border: 1px solid #277c61;
+    }
+
+    .hidden { display: none !important; }
+
+    @media(max-width: 850px) {
+      body { padding: 12px; }
+
+      .layout { grid-template-columns: 1fr; }
+
+      .ticket-list { max-height: 400px; }
+
+      .details { grid-template-columns: 1fr; }
+    }
+
+    @media(max-width: 480px) {
+      .panel-content { padding: 12px; }
+
+      .panel-heading { padding: 13px; }
+
+      button { padding: 9px 11px; }
+
+      .header-links { gap: 10px; }
+    }
+  </style>
+</head>
+
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Academia Storm</h1>
+      <p class="muted">Central administrativa de suporte</p>
+    </div>
+
+    <nav class="header-links">
+      <a href="/admin">← Painel do ranking</a>
+      <a href="/">Página principal</a>
+    </nav>
+  </header>
+
+  <section id="accessPanel" class="panel hidden">
+    <div class="panel-content">
+      <h2>Acesso administrativo necessário</h2>
+      <p class="muted">
+        Entre no painel administrativo para consultar e responder aos chamados.
+      </p>
+      <a href="/admin">Ir para o login administrativo</a>
+    </div>
+  </section>
+
+  <section id="supportPanel" class="hidden">
+    <div id="feedback" class="feedback" role="status" aria-live="polite"></div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Chamados recebidos</h2>
+          <button type="button" id="refreshButton" class="secondary">
+            Atualizar
+          </button>
+        </div>
+
+        <div class="panel-content">
+          <div class="filters">
+            <select id="statusFilter" aria-label="Filtrar chamados por status">
+              <option value="todos">Todos os chamados</option>
+              <option value="aberto">Abertos</option>
+              <option value="atendimento">Em atendimento</option>
+              <option value="resolvido">Resolvidos</option>
+            </select>
+          </div>
+
+          <p id="ticketCount" class="muted">Carregando chamados...</p>
+        </div>
+
+        <div id="ticketList" class="ticket-list">
+          <div class="empty">Carregando chamados...</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Detalhes do chamado</h2>
+        </div>
+
+        <div id="ticketDetails" class="panel-content">
+          <div class="empty">
+            Selecione um chamado à esquerda para ver as mensagens.
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<script>
+  const accessPanel = document.getElementById("accessPanel");
+  const supportPanel = document.getElementById("supportPanel");
+  const feedback = document.getElementById("feedback");
+  const ticketList = document.getElementById("ticketList");
+  const ticketCount = document.getElementById("ticketCount");
+  const ticketDetails = document.getElementById("ticketDetails");
+  const statusFilter = document.getElementById("statusFilter");
+
+  let allTickets = [];
+  let selectedTicketId = null;
+  let selectedTicket = null;
+  let isAuthenticated = false;
+
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401 || response.status === 403) {
+      const error = new Error("Sua sessão administrativa expirou. Entre novamente.");
+      error.status = response.status;
+      throw error;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.message || "Não foi possível concluir a solicitação.");
+    }
+
+    return data;
+  }
+
+  function showFeedback(text, type = "ok") {
+    feedback.textContent = text;
+    feedback.className = "feedback " + type;
+  }
+
+  function clearFeedback() {
+    feedback.textContent = "";
+    feedback.className = "feedback";
+  }
+
+  function formatDate(value) {
+    if (!value) return "Data não informada";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    return date.toLocaleString("pt-BR");
+  }
+
+  function statusName(status) {
+    const names = {
+      aberto: "Aberto",
+      atendimento: "Em atendimento",
+      resolvido: "Resolvido"
+    };
+
+    return names[status] || status || "Desconhecido";
+  }
+
+  function makeStatus(status) {
+    const element = document.createElement("span");
+    element.className = "status " + status;
+    element.textContent = statusName(status);
+    return element;
+  }
+
+  function makeElement(tag, className, text) {
+    const element = document.createElement(tag);
+
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+
+    return element;
+  }
+
+  async function checkAdminSession() {
+    try {
+      const result = await api("/api/admin/session");
+
+      if (!result.authenticated) {
+        showAccessRequired();
+        return;
+      }
+
+      isAuthenticated = true;
+      accessPanel.classList.add("hidden");
+      supportPanel.classList.remove("hidden");
+
+      await loadTickets();
+    } catch (error) {
+      if (error.status === 401 || error.status === 403) {
+        showAccessRequired();
+      } else {
+        accessPanel.classList.remove("hidden");
+        supportPanel.classList.add("hidden");
+
+        const content = accessPanel.querySelector(".panel-content");
+        content.replaceChildren();
+
+        content.append(
+          makeElement("h2", "", "Não foi possível conectar"),
+          makeElement(
+            "p",
+            "muted",
+            error.message + " Confira se o servidor está funcionando."
+          )
+        );
+
+        const link = document.createElement("a");
+        link.href = "/admin";
+        link.textContent = "Voltar ao painel administrativo";
+        content.appendChild(link);
+      }
+    }
+  }
+
+  function showAccessRequired() {
+    isAuthenticated = false;
+    supportPanel.classList.add("hidden");
+    accessPanel.classList.remove("hidden");
+  }
+
+  async function loadTickets(preferredId = selectedTicketId) {
+    clearFeedback();
+    ticketList.replaceChildren();
+    ticketCount.textContent = "Carregando chamados...";
+
+    try {
+      const data = await api("/api/admin/support/tickets");
+
+      allTickets = Array.isArray(data)
+        ? data
+        : Array.isArray(data.tickets)
+          ? data.tickets
+          : [];
+
+      renderTicketList();
+
+      if (preferredId !== null && preferredId !== undefined) {
+        const found = allTickets.find(
+          ticket => String(ticket.id) === String(preferredId)
+        );
+
+        if (found) {
+          await openTicket(found.id);
+        } else {
+          selectedTicketId = null;
+          selectedTicket = null;
+          renderEmptyDetails("O chamado selecionado não está mais na lista.");
+        }
+      } else {
+        selectedTicketId = null;
+        selectedTicket = null;
+        renderEmptyDetails("Selecione um chamado à esquerda para ver as mensagens.");
+      }
+    } catch (error) {
+      ticketList.replaceChildren();
+      ticketList.appendChild(
+        makeElement("div", "empty", error.message)
+      );
+      ticketCount.textContent = "Não foi possível carregar os chamados.";
+
+      if (error.status === 401 || error.status === 403) {
+        showAccessRequired();
+      } else {
+        showFeedback(error.message, "error");
+      }
+    }
+  }
+
+  function renderTicketList() {
+    ticketList.replaceChildren();
+
+    const filter = statusFilter.value;
+
+    const filtered = allTickets.filter(ticket => {
+      return filter === "todos" || ticket.status === filter;
+    });
+
+    ticketCount.textContent =
+      filtered.length + (filtered.length === 1
+        ? " chamado encontrado"
+        : " chamados encontrados");
+
+    if (!filtered.length) {
+      ticketList.appendChild(
+        makeElement("div", "empty", "Nenhum chamado neste filtro.")
+      );
+      return;
+    }
+
+    filtered.forEach(ticket => {
+      const button = makeElement(
+        "button",
+        "ticket-item" +
+          (String(ticket.id) === String(selectedTicketId) ? " selected" : "")
+      );
+
+      button.type = "button";
+
+      button.appendChild(
+        makeElement(
+          "span",
+          "ticket-title",
+          ticket.subject || "Chamado sem assunto"
+        )
+      );
+
+      button.appendChild(
+        makeElement(
+          "span",
+          "ticket-meta",
+          "Jogador: " + (ticket.player_name || "Não informado")
+        )
+      );
+
+      button.appendChild(
+        makeElement(
+          "span",
+          "ticket-meta",
+          "Criado: " + formatDate(ticket.created_at)
+        )
+      );
+
+      button.appendChild(makeStatus(ticket.status));
+
+      button.addEventListener("click", () => openTicket(ticket.id));
+
+      ticketList.appendChild(button);
+    });
+  }
+
+  function renderEmptyDetails(text) {
+    ticketDetails.replaceChildren();
+    ticketDetails.appendChild(makeElement("div", "empty", text));
+  }
+
+  async function openTicket(id) {
+    clearFeedback();
+    selectedTicketId = id;
+    renderTicketList();
+    ticketDetails.replaceChildren();
+    ticketDetails.appendChild(
+      makeElement("div", "empty", "Carregando mensagens...")
+    );
+
+    try {
+      const result = await api("/api/admin/support/tickets/" + encodeURIComponent(id));
+
+      const ticket = result.ticket || result;
+      const messages = Array.isArray(result.messages) ? result.messages : [];
+
+      selectedTicket = ticket;
+      selectedTicketId = ticket.id;
+
+      renderTicketList();
+      renderTicketDetails(ticket, messages);
+    } catch (error) {
+      renderEmptyDetails(error.message);
+
+      if (error.status === 401 || error.status === 403) {
+        showAccessRequired();
+      } else {
+        showFeedback(error.message, "error");
+      }
+    }
+  }
+
+  function renderTicketDetails(ticket, messages) {
+    ticketDetails.replaceChildren();
+
+    const heading = makeElement("div", "detail-header");
+    const headingText = document.createElement("div");
+
+    headingText.appendChild(
+      makeElement("h2", "", ticket.subject || "Chamado sem assunto")
+    );
+
+    headingText.appendChild(
+      makeElement("p", "muted", "Chamado #" + ticket.id)
+    );
+
+    heading.appendChild(headingText);
+    heading.appendChild(makeStatus(ticket.status));
+    ticketDetails.appendChild(heading);
+
+    const details = makeElement("div", "details");
+
+    const info = [
+      ["Jogador", ticket.player_name || "Não informado"],
+      ["Status", statusName(ticket.status)],
+      ["Criado em", formatDate(ticket.created_at)],
+      ["Última atualização", formatDate(ticket.updated_at)]
+    ];
+
+    info.forEach(([label, value]) => {
+      const box = makeElement("div", "detail-box");
+      box.appendChild(makeElement("small", "", label));
+      box.appendChild(makeElement("strong", "", value));
+      details.appendChild(box);
+    });
+
+    ticketDetails.appendChild(details);
+
+    const statusForm = makeElement("div", "status-form");
+    const statusField = makeElement("div", "field");
+    const statusLabel = makeElement("label", "", "Alterar status");
+    const statusSelect = document.createElement("select");
+
+    statusSelect.setAttribute("aria-label", "Status do chamado");
+
+    [
+      ["aberto", "Aberto"],
+      ["atendimento", "Em atendimento"],
+      ["resolvido", "Resolvido"]
+    ].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      statusSelect.appendChild(option);
+    });
+
+    statusSelect.value = ticket.status;
+
+    statusField.append(statusLabel, statusSelect);
+    statusForm.appendChild(statusField);
+
+    const saveStatusButton = makeElement("button", "", "Salvar status");
+    saveStatusButton.type = "button";
+
+    saveStatusButton.addEventListener("click", async () => {
+      const newStatus = statusSelect.value;
+
+      saveStatusButton.disabled = true;
+
+      try {
+        await api("/api/admin/support/tickets/" + encodeURIComponent(ticket.id), {
+          method: "PATCH",
+          body: JSON.stringify({ status: newStatus })
+        });
+
+        showFeedback("Status atualizado com sucesso.");
+        await loadTickets(ticket.id);
+      } catch (error) {
+        showFeedback(error.message, "error");
+
+        if (error.status === 401 || error.status === 403) {
+          showAccessRequired();
+        }
+      } finally {
+        saveStatusButton.disabled = false;
+      }
+    });
+
+    statusForm.appendChild(saveStatusButton);
+    ticketDetails.appendChild(statusForm);
+
+    const messagesHeading = makeElement("h2", "", "Conversa");
+    ticketDetails.appendChild(messagesHeading);
+
+    const messagesContainer = makeElement("div", "messages");
+
+    if (!messages.length) {
+      messagesContainer.appendChild(
+        makeElement("div", "empty", "Este chamado ainda não possui mensagens.")
+      );
+    } else {
+      messages.forEach(message => {
+        const isAdmin = message.sender === "admin";
+
+        const messageBox = makeElement(
+          "article",
+          "message" + (isAdmin ? " admin" : "")
+        );
+
+        const top = makeElement("div", "message-top");
+
+        top.appendChild(
+          makeElement("strong", "", isAdmin ? "Administração" : "Jogador")
+        );
+
+        top.appendChild(
+          makeElement("span", "", formatDate(message.created_at))
+        );
+
+        messageBox.appendChild(top);
+
+        messageBox.appendChild(
+          makeElement("div", "message-body", message.message || "")
+        );
+
+        messagesContainer.appendChild(messageBox);
+      });
+    }
+
+    ticketDetails.appendChild(messagesContainer);
+
+    const replyForm = makeElement("form", "reply-form");
+    const replyLabel = makeElement("label", "", "Responder ao jogador");
+
+    const replyTextarea = document.createElement("textarea");
+    replyTextarea.maxLength = 4000;
+    replyTextarea.required = true;
+    replyTextarea.placeholder = "Digite sua resposta...";
+    replyTextarea.setAttribute("aria-label", "Mensagem de resposta");
+
+    replyForm.append(replyLabel, replyTextarea);
+
+    const replyActions = makeElement("div", "actions");
+
+    const sendButton = makeElement("button", "", "Enviar resposta");
+    sendButton.type = "submit";
+
+    const deleteButton = makeElement("button", "danger", "Excluir chamado");
+    deleteButton.type = "button";
+
+    replyActions.append(sendButton, deleteButton);
+    replyForm.appendChild(replyActions);
+
+    if (ticket.status === "resolvido") {
+      replyTextarea.disabled = true;
+      sendButton.disabled = true;
+      replyTextarea.placeholder =
+        "Este chamado está resolvido. Reabra o chamado para responder.";
+    }
+
+    replyForm.addEventListener("submit", async event => {
+      event.preventDefault();
+
+      const text = replyTextarea.value.trim();
+
+      if (!text) {
+        showFeedback("Digite uma mensagem antes de responder.", "error");
+        return;
+      }
+
+      sendButton.disabled = true;
+
+      try {
+        await api(
+          "/api/admin/support/tickets/" +
+            encodeURIComponent(ticket.id) +
+            "/messages",
+          {
+            method: "POST",
+            body: JSON.stringify({ message: text })
+          }
+        );
+
+        showFeedback("Resposta enviada com sucesso.");
+        await loadTickets(ticket.id);
+      } catch (error) {
+        showFeedback(error.message, "error");
+
+        if (error.status === 401 || error.status === 403) {
+          showAccessRequired();
+        }
+      } finally {
+        sendButton.disabled = false;
+      }
+    });
+
+    deleteButton.addEventListener("click", async () => {
+      const confirmed = confirm(
+        "Tem certeza de que deseja excluir permanentemente este chamado e todas as mensagens?"
+      );
+
+      if (!confirmed) return;
+
+      deleteButton.disabled = true;
+
+      try {
+        await api("/api/admin/support/tickets/" + encodeURIComponent(ticket.id), {
+          method: "DELETE"
+        });
+
+        selectedTicketId = null;
+        selectedTicket = null;
+
+        showFeedback("Chamado excluído com sucesso.");
+        await loadTickets(null);
+      } catch (error) {
+        showFeedback(error.message, "error");
+
+        if (error.status === 401 || error.status === 403) {
+          showAccessRequired();
+        }
+      } finally {
+        deleteButton.disabled = false;
+      }
+    });
+
+    ticketDetails.appendChild(replyForm);
+
+    if (messagesContainer.lastElementChild) {
+      messagesContainer.lastElementChild.scrollIntoView({
+        block: "nearest"
+      });
+    }
+  }
+
+  document.getElementById("refreshButton").addEventListener("click", () => {
+    loadTickets(selectedTicketId);
+  });
+
+  statusFilter.addEventListener("change", renderTicketList);
+
+  checkAdminSession();
+</script>
+</body>
+</html>
