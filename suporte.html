@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#07111f">
+  <title>Suporte | Academia Storm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px 14px 40px;
+      color: #edf5ff;
+      background: radial-gradient(ellipse at top, #132b4b 0, #07111f 55%, #030812 100%);
+      font-family: 'Rajdhani', sans-serif;
+    }
+    .container { width: 100%; max-width: 850px; margin: 0 auto; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
+    .brand { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+    .brand span { color: #39bdf8; }
+    a { color: #64ccff; text-decoration: none; }
+    .back { border: 1px solid #315174; padding: 9px 14px; border-radius: 8px; font-weight: 700; }
+    .hero { text-align: center; margin: 25px 0; }
+    .hero small { color: #42c8ff; letter-spacing: 4px; font-weight: 700; }
+    h1 { margin: 8px 0; font-size: clamp(30px, 7vw, 46px); line-height: 1.1; }
+    .hero p { color: #a8bed8; font-size: 18px; margin: 10px 0; }
+    .panel { background: rgba(12, 27, 47, .94); border: 1px solid #243f60; border-radius: 14px; padding: clamp(16px, 4vw, 28px); margin: 18px 0; box-shadow: 0 12px 35px #0003; }
+    h2 { margin: 0 0 8px; font-size: 25px; }
+    .hint { color: #a8bed8; margin: 0 0 18px; }
+    label { display: block; font-size: 17px; font-weight: 700; margin: 15px 0 6px; }
+    input, textarea, select {
+      width: 100%; padding: 12px; border: 1px solid #355477; border-radius: 8px;
+      background: #071423; color: white; font: 16px 'Rajdhani', sans-serif; outline: none;
+    }
+    input:focus, textarea:focus, select:focus { border-color: #38bdf8; }
+    textarea { min-height: 125px; resize: vertical; }
+    button {
+      cursor: pointer; border: 0; border-radius: 8px; padding: 12px 18px;
+      background: #159bd3; color: white; font: 700 17px 'Rajdhani', sans-serif;
+      margin-top: 16px; width: 100%;
+    }
+    button:hover { background: #087eb4; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .secondary { background: #213b58; }
+    .secondary:hover { background: #2e5278; }
+    .notice { display: none; padding: 12px; border-radius: 8px; margin-top: 15px; overflow-wrap: anywhere; }
+    .notice.show { display: block; }
+    .notice.error { background: #481d2a; border: 1px solid #a33a50; color: #ffd9df; }
+    .notice.success { background: #123c31; border: 1px solid #287e62; color: #d2ffed; }
+    .code-box { padding: 13px; background: #06101d; border: 1px dashed #3a9fd2; border-radius: 8px; overflow-wrap: anywhere; color: #7dd3fc; font-weight: 700; }
+    .hidden { display: none !important; }
+    .ticket-meta { color: #b5c9df; line-height: 1.8; }
+    .status { display: inline-block; padding: 3px 9px; border-radius: 20px; background: #213b58; color: #bdeaff; font-weight: 700; }
+    .messages { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
+    .message { padding: 12px 14px; border-radius: 10px; background: #132943; border: 1px solid #294562; overflow-wrap: anywhere; }
+    .message.admin { border-color: #1686b4; background: #0d3045; }
+    .message strong { display: block; margin-bottom: 5px; color: #67d2ff; }
+    .message time { display: block; margin-top: 8px; color: #8ba6c2; font-size: 13px; }
+    .foot { text-align: center; color: #728ba7; margin-top: 28px; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div class="brand">ACADEMIA <span>STORM</span></div>
+      <a class="back" href="/">← VOLTAR AO SITE</a>
+    </header>
+
+    <section class="hero">
+      <small>CENTRAL DE ATENDIMENTO</small>
+      <h1>SUPORTE DO JOGADOR</h1>
+      <p>Precisa de ajuda? Abra um chamado e converse com a administração.</p>
+    </section>
+
+    <section class="panel" id="newTicket">
+      <h2>🎫 Abrir um chamado</h2>
+      <p class="hint">Descreva seu problema. Depois de enviar, guarde o código de acesso para acompanhar as respostas.</p>
+
+      <form id="ticketForm">
+        <label for="playerName">Seu nome ou nick</label>
+        <input id="playerName" name="player_name" maxlength="60" minlength="2" required autocomplete="nickname" placeholder="Ex.: NarutoBR">
+
+        <label for="subject">Assunto</label>
+        <input id="subject" name="subject" maxlength="100" minlength="3" required placeholder="Ex.: Problema no ranking">
+
+        <label for="message">Descreva o problema</label>
+        <textarea id="message" name="message" maxlength="4000" minlength="5" required placeholder="Explique o que aconteceu e como podemos ajudar."></textarea>
+
+        <button id="submitTicket" type="submit">ENVIAR CHAMADO</button>
+        <div id="formNotice" class="notice" role="status" aria-live="polite"></div>
+      </form>
+
+      <div id="createdTicket" class="hidden">
+        <h2>✅ Chamado criado!</h2>
+        <p>Guarde este código. Ele é necessário para consultar o chamado e não deve ser compartilhado com outras pessoas.</p>
+        <div id="createdCode" class="code-box"></div>
+        <button id="copyCode" type="button">COPIAR CÓDIGO</button>
+        <button id="viewCreatedTicket" class="secondary" type="button">ACOMPANHAR CHAMADO</button>
+      </div>
+    </section>
+
+    <section class="panel" id="lookupPanel">
+      <h2>🔎 Consultar meu chamado</h2>
+      <p class="hint">Já abriu um chamado? Digite o código de acesso que recebeu ao criá-lo.</p>
+      <form id="lookupForm">
+        <label for="accessCode">Código de acesso</label>
+        <input id="accessCode" name="code" required autocomplete="off" spellcheck="false" placeholder="Cole aqui seu código de acesso">
+        <button type="submit">CONSULTAR CHAMADO</button>
+        <div id="lookupNotice" class="notice" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="panel hidden" id="conversationPanel">
+      <h2 id="ticketTitle">Seu chamado</h2>
+      <div id="ticketMeta" class="ticket-meta"></div>
+      <div id="messages" class="messages"></div>
+      <form id="replyForm">
+        <label for="replyMessage">Enviar uma mensagem</label>
+        <textarea id="replyMessage" maxlength="4000" required placeholder="Digite sua resposta..."></textarea>
+        <button id="replyButton" type="submit">ENVIAR MENSAGEM</button>
+        <div id="replyNotice" class="notice" role="status" aria-live="polite"></div>
+      </form>
+      <button type="button" class="secondary" id="refreshTicket">ATUALIZAR CONVERSA</button>
+    </section>
+
+    <p class="foot">Academia Storm Connections Ranking · Central de Suporte</p>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentCode = "";
+    let lastCreatedCode = "";
+
+    function showNotice(id, message, type = "error") {
+      const el = $(id);
+      el.textContent = message;
+      el.className = "notice show " + type;
+    }
+
+    function clearNotice(id) {
+      $(id).textContent = "";
+      $(id).className = "notice";
+    }
+
+    async function readResponse(response) {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.message || "Não foi possível concluir a solicitação.");
+      }
+      return data;
+    }
+
+    $("ticketForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearNotice("formNotice");
+
+      const button = $("submitTicket");
+      button.disabled = true;
+      button.textContent = "ENVIANDO...";
+
+      try {
+        const response = await fetch("/api/support/tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            player_name: $("playerName").value.trim(),
+            subject: $("subject").value.trim(),
+            message: $("message").value.trim()
+          })
+        });
+
+        const data = await readResponse(response);
+        const code = data.ticket && data.ticket.code;
+
+        if (!code) throw new Error("O chamado foi enviado, mas o servidor não retornou o código. Consulte a administração.");
+
+        lastCreatedCode = code;
+        $("createdCode").textContent = code;
+        $("createdTicket").classList.remove("hidden");
+        $("ticketForm").classList.add("hidden");
+        showNotice("formNotice", data.message || "Chamado criado com sucesso.", "success");
+      } catch (error) {
+        showNotice("formNotice", error.message || "Erro de conexão. Tente novamente.");
+      } finally {
+        button.disabled = false;
+        button.textContent = "ENVIAR CHAMADO";
+      }
+    });
+
+    $("copyCode").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(lastCreatedCode);
+        showNotice("formNotice", "Código copiado! Guarde-o em um local seguro.", "success");
+      } catch {
+        showNotice("formNotice", "Copie manualmente o código exibido acima.", "success");
+      }
+    });
+
+    $("viewCreatedTicket").addEventListener("click", async () => {
+      $("accessCode").value = lastCreatedCode;
+      $("lookupPanel").scrollIntoView({ behavior: "smooth" });
+      await loadTicket(lastCreatedCode);
+    });
+
+    $("lookupForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const code = $("accessCode").value.trim();
+      await loadTicket(code);
+    });
+
+    async function loadTicket(code) {
+      clearNotice("lookupNotice");
+      clearNotice("replyNotice");
+
+      if (!/^[a-f0-9]{48}$/.test(code)) {
+        showNotice("lookupNotice", "O código deve conter os 48 caracteres recebidos ao abrir o chamado.");
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/support/tickets/" + encodeURIComponent(code), {
+          cache: "no-store"
+        });
+        const data = await readResponse(response);
+
+        currentCode = code;
+        const ticket = data.ticket;
+
+        $("ticketTitle").textContent = ticket.subject || "Seu chamado";
+        $("ticketMeta").replaceChildren();
+
+        const addMeta = (label, value) => {
+          const line = document.createElement("div");
+          line.textContent = label + ": " + value;
+          $("ticketMeta").appendChild(line);
+        };
+
+        addMeta("Solicitante", ticket.player_name);
+        addMeta("Status", ticket.status === "aberto" ? "Aberto" :
+          ticket.status === "atendimento" ? "Em atendimento" : "Resolvido");
+        addMeta("Código", ticket.code);
+
+        $("messages").replaceChildren();
+
+        for (const item of (data.messages || [])) {
+          const box = document.createElement("div");
+          box.className = "message" + (item.sender === "admin" ? " admin" : "");
+
+          const author = document.createElement("strong");
+          author.textContent = item.sender === "admin" ? "SUPORTE DA ACADEMIA STORM" : "VOCÊ";
+
+          const content = document.createElement("div");
+          content.textContent = item.message;
+
+          const time = document.createElement("time");
+          const date = new Date(item.created_at);
+          time.textContent = Number.isNaN(date.getTime()) ? "" : date.toLocaleString("pt-BR");
+
+          box.append(author, content, time);
+          $("messages").appendChild(box);
+        }
+
+        const resolved = ticket.status === "resolvido";
+        $("replyMessage").disabled = resolved;
+        $("replyButton").disabled = resolved;
+        $("replyButton").textContent = resolved ? "CHAMADO RESOLVIDO" : "ENVIAR MENSAGEM";
+        if (resolved) {
+          showNotice("replyNotice", "Este chamado foi resolvido e não aceita novas mensagens.", "success");
+        }
+
+        $("conversationPanel").classList.remove("hidden");
+        $("conversationPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) {
+        $("conversationPanel").classList.add("hidden");
+        showNotice("lookupNotice", error.message || "Não foi possível consultar o chamado.");
+      }
+    }
+
+    $("replyForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearNotice("replyNotice");
+
+      const message = $("replyMessage").value.trim();
+      if (!currentCode || !message) {
+        showNotice("replyNotice", "Digite uma mensagem antes de enviar.");
+        return;
+      }
+
+      const button = $("replyButton");
+      button.disabled = true;
+
+      try {
+        const response = await fetch(
+          "/api/support/tickets/" + encodeURIComponent(currentCode) + "/messages",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message })
+          }
+        );
+
+        await readResponse(response);
+        $("replyMessage").value = "";
+        showNotice("replyNotice", "Mensagem enviada com sucesso.", "success");
+        await loadTicket(currentCode);
+      } catch (error) {
+        showNotice("replyNotice", error.message || "Não foi possível enviar a mensagem.");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    $("refreshTicket").addEventListener("click", async () => {
+      if (currentCode) await loadTicket(currentCode);
+    });
+  </script>
+</body>
+</html>
