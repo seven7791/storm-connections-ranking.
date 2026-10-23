@@ -7,12 +7,40 @@ const PgSession = require("connect-pg-simple")(session);
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const cloudinary = require("cloudinary").v2;
+const multer = require("multer");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BOARD_ID = "754526789448";
 const SCOREBOARDS_API_KEY = process.env.SCOREBOARDS_API_KEY;
+// ==========================================
+// CLOUDINARY — FOTOS DOS JOGADORES
+// ==========================================
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const imageUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 5 * 1024 * 1024,
+        files: 1
+    },
+    fileFilter: (req, file, callback) => {
+        if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
+            return callback(
+                new Error("Envie uma imagem JPG, PNG, WEBP ou GIF.")
+            );
+        }
+
+        callback(null, true);
+    }
+});
 
 if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL não configurada.");
@@ -211,6 +239,144 @@ app.get("/api/player/:playerId", async (req, res) => {
         sendApiError(res, error);
     }
 });
+/* ==========================================
+   FOTOS DOS JOGADORES — CLOUDINARY
+   ========================================== */
+
+// Consultar fotos cadastradas.
+app.get("/api/player-photos", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT player_type, player_id, player_name, photo_url
+            FROM player_photos
+            ORDER BY player_name
+        `);
+
+        res.set("Cache-Control", "no-store");
+        res.json(result.rows);
+    } catch (error) {
+        sendApiError(res, error);
+    }
+});
+
+// Enviar ou atualizar a foto de um jogador.
+app.post(
+    "/api/admin/player-photo",
+    requireAdmin,
+    (req, res, next) => {
+        imageUpload.single("photo")(req, res, (error) => {
+            if (error) {
+                return res.status(400).json({
+                    error: true,
+                    message: error.message ||
+                        "Não foi possível receber a imagem."
+                });
+            }
+
+            next();
+        });
+    },
+    async (req, res) => {
+        const playerType = cleanText(req.body?.player_type);
+        const playerId = cleanText(req.body?.player_id);
+        const playerName = cleanText(req.body?.player_name);
+
+        if (!req.file) {
+            return res.status(400).json({
+                error: true,
+                message: "Selecione uma imagem."
+            });
+        }
+
+        if (!["scoreboards", "challenge"].includes(playerType)) {
+            return res.status(400).json({
+                error: true,
+                message: "Tipo de jogador inválido."
+            });
+        }
+
+        if (
+            !playerId ||
+            playerId.length > 100 ||
+            !playerName ||
+            playerName.length > 60
+        ) {
+            return res.status(400).json({
+                error: true,
+                message: "ID ou nome do jogador inválido."
+            });
+        }
+
+        if (
+            !process.env.CLOUDINARY_CLOUD_NAME ||
+            !process.env.CLOUDINARY_API_KEY ||
+            !process.env.CLOUDINARY_API_SECRET
+        ) {
+            return res.status(503).json({
+                error: true,
+                message: "As variáveis do Cloudinary não estão configuradas."
+            });
+        }
+
+        try {
+            const uploaded = await new Promise((resolve, reject) => {
+                const stream = cloudinary.uploader.upload_stream(
+                    {
+                        folder: "academia-storm/players",
+                        resource_type: "image",
+                        transformation: [{
+                            width: 600,
+                            height: 600,
+                            crop: "limit",
+                            quality: "auto",
+                            fetch_format: "auto"
+                        }]
+                    },
+                    (error, result) => {
+                        if (error) {
+                            reject(error);
+                        } else {
+                            resolve(result);
+                        }
+                    }
+                );
+
+                stream.end(req.file.buffer);
+            });
+
+            const result = await pool.query(`
+                INSERT INTO player_photos
+                    (player_type, player_id, player_name, photo_url, public_id)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (player_type, player_id)
+                DO UPDATE SET
+                    player_name = EXCLUDED.player_name,
+                    photo_url = EXCLUDED.photo_url,
+                    public_id = EXCLUDED.public_id,
+                    updated_at = NOW()
+                RETURNING player_type, player_id, player_name, photo_url
+            `, [
+                playerType,
+                playerId,
+                playerName,
+                uploaded.secure_url,
+                uploaded.public_id
+            ]);
+
+            res.status(201).json({
+                success: true,
+                photo: result.rows[0]
+            });
+        } catch (error) {
+            console.error(
+                "Erro no upload Cloudinary:",
+                error.message || error
+            );
+
+            sendApiError(res, error);
+        }
+    }
+);
 
 // ==========================================
 // LOGIN ADMINISTRATIVO EXISTENTE
@@ -294,10 +460,18 @@ app.post("/api/admin/logout", requireAdmin, (req, res) => {
 // Visualização pública do ranking.
 app.get("/api/challenge-ranking", async (req, res) => {
     try {
-        const result = await pool.query(
-            `SELECT id, rank_position, player_name
-             FROM challenge_players
-             ORDER BY rank_position ASC, id ASC`
+        const result = await pool.query(`
+    SELECT
+        cp.id,
+        cp.rank_position,
+        cp.player_name,
+        pp.photo_url
+    FROM challenge_players cp
+    LEFT JOIN player_photos pp
+        ON pp.player_type = 'challenge'
+        AND pp.player_id = cp.id::text
+    ORDER BY cp.rank_position ASC, cp.id ASC
+`);
         );
 
         res.json(result.rows);
@@ -1098,12 +1272,19 @@ app.get("/{*splat}", (req, res) => {
 
 async function startServer() {
     await pool.query(`
-        CREATE TABLE IF NOT EXISTS challenge_players (
-            id SERIAL PRIMARY KEY,
-            rank_position INTEGER NOT NULL,
-            player_name VARCHAR(60) NOT NULL
-        )
-    `);
+    CREATE TABLE IF NOT EXISTS player_photos (
+        id BIGSERIAL PRIMARY KEY,
+        player_type VARCHAR(20) NOT NULL
+            CHECK (player_type IN ('scoreboards', 'challenge')),
+        player_id VARCHAR(100) NOT NULL,
+        player_name VARCHAR(60) NOT NULL,
+        photo_url TEXT NOT NULL,
+        public_id TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (player_type, player_id)
+    )
+`);
 
     await createSupportTables();
 
