@@ -15,8 +15,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BOARD_ID = "754526789448";
 const SCOREBOARDS_API_KEY = process.env.SCOREBOARDS_API_KEY;
+
 // ==========================================
-// CLOUDINARY — FOTOS DOS JOGADORES
+// CLOUDINARY
 // ==========================================
 
 cloudinary.config({
@@ -42,12 +43,18 @@ const imageUpload = multer({
     }
 });
 
+// ==========================================
+// CONFIGURAÇÃO E VARIÁVEIS
+// ==========================================
+
 if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL não configurada.");
 }
 
 if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) {
-    throw new Error("ADMIN_USERNAME e ADMIN_PASSWORD precisam estar configuradas.");
+    throw new Error(
+        "ADMIN_USERNAME e ADMIN_PASSWORD precisam estar configuradas."
+    );
 }
 
 if (!process.env.SESSION_SECRET) {
@@ -66,7 +73,12 @@ const ADMIN_PASSWORD_HASH = bcrypt.hashSync(
     12
 );
 
+// ==========================================
+// EXPRESS E SESSÃO
+// ==========================================
+
 app.set("trust proxy", 1);
+
 app.use(express.json({ limit: "20kb" }));
 
 app.use(session({
@@ -87,6 +99,29 @@ app.use(session({
 }));
 
 app.use(express.static(__dirname));
+
+// ==========================================
+// TABELAS DO POSTGRESQL
+// ==========================================
+
+async function createPlayerPhotosTable() {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS player_photos (
+            id BIGSERIAL PRIMARY KEY,
+            player_type VARCHAR(20) NOT NULL
+                CHECK (player_type IN ('scoreboards', 'challenge')),
+            player_id VARCHAR(100) NOT NULL,
+            player_name VARCHAR(60) NOT NULL,
+            photo_url TEXT NOT NULL,
+            public_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (player_type, player_id)
+        )
+    `);
+
+    console.log("Tabela player_photos verificada.");
+}
 
 // ==========================================
 // FUNÇÕES GERAIS
@@ -123,7 +158,104 @@ function validNumericId(value) {
 }
 
 // ==========================================
-// SCOREBOARDS.DEV — ROTAS EXISTENTES
+// FOTOS — ASSOCIAR AO RANKING E PERFIL
+// ==========================================
+
+async function getPlayerPhotos(playerType) {
+    const result = await pool.query(
+        `SELECT player_id, player_name, photo_url
+         FROM player_photos
+         WHERE player_type = $1`,
+        [playerType]
+    );
+
+    return result.rows;
+}
+
+function attachPhotos(data, photos) {
+    const byId = new Map();
+    const byName = new Map();
+
+    for (const photo of photos) {
+        byId.set(String(photo.player_id), photo);
+
+        byName.set(
+            photo.player_name.trim().toLowerCase(),
+            photo
+        );
+    }
+
+    function walk(value) {
+        if (Array.isArray(value)) {
+            return value.map(walk);
+        }
+
+        if (!value || typeof value !== "object") {
+            return value;
+        }
+
+        const result = {};
+
+        for (const [key, child] of Object.entries(value)) {
+            result[key] = walk(child);
+        }
+
+        const idFields = [
+            "player_id",
+            "playerId",
+            "id",
+            "user_id",
+            "userId",
+            "discord_id",
+            "discordId"
+        ];
+
+        const nameFields = [
+            "player_name",
+            "playerName",
+            "username",
+            "display_name",
+            "displayName",
+            "name"
+        ];
+
+        let photo = null;
+
+        for (const field of idFields) {
+            const id = result[field];
+
+            if (id !== undefined && id !== null) {
+                photo = byId.get(String(id));
+
+                if (photo) break;
+            }
+        }
+
+        if (!photo) {
+            for (const field of nameFields) {
+                const name = result[field];
+
+                if (typeof name === "string" && name.trim()) {
+                    photo = byName.get(name.trim().toLowerCase());
+
+                    if (photo) break;
+                }
+            }
+        }
+
+        if (photo) {
+            result.photo_url = photo.photo_url;
+            result.photo = photo.photo_url;
+        }
+
+        return result;
+    }
+
+    return walk(data);
+}
+
+// ==========================================
+// SCOREBOARDS.DEV
 // ==========================================
 
 async function scoreboardsFetch(endpoint) {
@@ -150,7 +282,13 @@ async function scoreboardsFetch(endpoint) {
         );
 
         error.status = response.status;
-        console.error("ERRO SCOREBOARDS:", response.status, text);
+
+        console.error(
+            "ERRO SCOREBOARDS:",
+            response.status,
+            text
+        );
+
         throw error;
     }
 
@@ -161,6 +299,10 @@ async function scoreboardsFetch(endpoint) {
     }
 }
 
+// ==========================================
+// RANKING PRINCIPAL COM FOTOS
+// ==========================================
+
 app.get("/api/ranking", async (req, res) => {
     try {
         const limit = Math.min(
@@ -169,15 +311,23 @@ app.get("/api/ranking", async (req, res) => {
         );
 
         const data = await scoreboardsFetch(
-            "/boards/" + encodeURIComponent(BOARD_ID) +
-            "/entries?limit=" + limit
+            "/boards/" +
+            encodeURIComponent(BOARD_ID) +
+            "/entries?limit=" +
+            limit
         );
 
-        res.json(data);
+        const photos = await getPlayerPhotos("scoreboards");
+
+        res.json(attachPhotos(data, photos));
     } catch (error) {
         sendApiError(res, error);
     }
 });
+
+// ==========================================
+// HISTÓRICO DE PARTIDAS
+// ==========================================
 
 app.get("/api/matches", async (req, res) => {
     try {
@@ -201,6 +351,10 @@ app.get("/api/matches", async (req, res) => {
         sendApiError(res, error);
     }
 });
+
+// ==========================================
+// PARTIDAS DE UM JOGADOR
+// ==========================================
 
 app.get("/api/player/:playerId/matches", async (req, res) => {
     try {
@@ -227,6 +381,10 @@ app.get("/api/player/:playerId/matches", async (req, res) => {
     }
 });
 
+// ==========================================
+// PERFIL DO JOGADOR COM FOTO
+// ==========================================
+
 app.get("/api/player/:playerId", async (req, res) => {
     try {
         const data = await scoreboardsFetch(
@@ -234,16 +392,18 @@ app.get("/api/player/:playerId", async (req, res) => {
             "/entries/" + encodeURIComponent(req.params.playerId)
         );
 
-        res.json(data);
+        const photos = await getPlayerPhotos("scoreboards");
+
+        res.json(attachPhotos(data, photos));
     } catch (error) {
         sendApiError(res, error);
     }
 });
-/* ==========================================
-   FOTOS DOS JOGADORES — CLOUDINARY
-   ========================================== */
 
-// Consultar fotos cadastradas.
+// ==========================================
+// CONSULTAR FOTOS DOS JOGADORES
+// ==========================================
+
 app.get("/api/player-photos", async (req, res) => {
     try {
         const result = await pool.query(`
@@ -259,7 +419,10 @@ app.get("/api/player-photos", async (req, res) => {
     }
 });
 
-// Enviar ou atualizar a foto de um jogador.
+// ==========================================
+// UPLOAD DE FOTOS — ADMIN
+// ==========================================
+
 app.post(
     "/api/admin/player-photo",
     requireAdmin,
@@ -314,7 +477,8 @@ app.post(
         ) {
             return res.status(503).json({
                 error: true,
-                message: "As variáveis do Cloudinary não estão configuradas."
+                message:
+                    "As variáveis do Cloudinary não estão configuradas."
             });
         }
 
@@ -346,7 +510,8 @@ app.post(
 
             const result = await pool.query(`
                 INSERT INTO player_photos
-                    (player_type, player_id, player_name, photo_url, public_id)
+                    (player_type, player_id, player_name,
+                     photo_url, public_id)
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (player_type, player_id)
                 DO UPDATE SET
@@ -379,7 +544,7 @@ app.post(
 );
 
 // ==========================================
-// LOGIN ADMINISTRATIVO EXISTENTE
+// LOGIN ADMINISTRATIVO
 // ==========================================
 
 app.get("/api/admin/session", (req, res) => {
@@ -457,22 +622,20 @@ app.post("/api/admin/logout", requireAdmin, (req, res) => {
 // RANKING DE DESAFIOS — POSTGRESQL
 // ==========================================
 
-// Visualização pública do ranking.
 app.get("/api/challenge-ranking", async (req, res) => {
     try {
         const result = await pool.query(`
-    SELECT
-        cp.id,
-        cp.rank_position,
-        cp.player_name,
-        pp.photo_url
-    FROM challenge_players cp
-    LEFT JOIN player_photos pp
-        ON pp.player_type = 'challenge'
-        AND pp.player_id = cp.id::text
-    ORDER BY cp.rank_position ASC, cp.id ASC
-`);
-        );
+            SELECT
+                cp.id,
+                cp.rank_position,
+                cp.player_name,
+                pp.photo_url
+            FROM challenge_players cp
+            LEFT JOIN player_photos pp
+                ON pp.player_type = 'challenge'
+                AND pp.player_id = cp.id::text
+            ORDER BY cp.rank_position ASC, cp.id ASC
+        `);
 
         res.json(result.rows);
     } catch (error) {
@@ -480,7 +643,10 @@ app.get("/api/challenge-ranking", async (req, res) => {
     }
 });
 
-// Adicionar jogador em uma posição específica.
+// ==========================================
+// ADICIONAR JOGADOR AO RANKING DE DESAFIOS
+// ==========================================
+
 app.post(
     "/api/admin/challenge-ranking",
     requireAdmin,
@@ -496,7 +662,8 @@ app.post(
         ) {
             return res.status(400).json({
                 error: true,
-                message: "Informe um nome de até 60 caracteres e uma posição válida."
+                message:
+                    "Informe um nome de até 60 caracteres e uma posição válida."
             });
         }
 
@@ -558,7 +725,10 @@ app.post(
     }
 );
 
-// Editar nome do jogador.
+// ==========================================
+// EDITAR JOGADOR DO RANKING DE DESAFIOS
+// ==========================================
+
 app.patch(
     "/api/admin/challenge-ranking/:id",
     requireAdmin,
@@ -606,7 +776,10 @@ app.patch(
     }
 );
 
-// Reordenar todos os jogadores.
+// ==========================================
+// REORDENAR RANKING DE DESAFIOS
+// ==========================================
+
 app.put(
     "/api/admin/challenge-ranking/reorder",
     requireAdmin,
@@ -672,7 +845,10 @@ app.put(
     }
 );
 
-// Excluir jogador e reorganizar posições.
+// ==========================================
+// EXCLUIR JOGADOR DO RANKING DE DESAFIOS
+// ==========================================
+
 app.delete(
     "/api/admin/challenge-ranking/:id",
     requireAdmin,
@@ -713,6 +889,14 @@ app.delete(
                     message: "Jogador não encontrado."
                 });
             }
+
+            // Remove também a referência da foto no banco.
+            await client.query(
+                `DELETE FROM player_photos
+                 WHERE player_type = 'challenge'
+                 AND player_id = $1`,
+                [String(id)]
+            );
 
             for (let i = 0; i < ids.length; i++) {
                 await client.query(
@@ -846,7 +1030,7 @@ app.post("/api/support/tickets", async (req, res) => {
 });
 
 // ==========================================
-// SUPORTE — CONSULTAR CHAMADO COM CÓDIGO
+// SUPORTE — CONSULTAR CHAMADO
 // ==========================================
 
 app.get("/api/support/tickets/:code", async (req, res) => {
@@ -1235,7 +1419,6 @@ app.delete(
                 });
             }
 
-            // As mensagens são excluídas pelo ON DELETE CASCADE.
             res.json({
                 success: true,
                 message: "Chamado excluído permanentemente."
@@ -1271,27 +1454,14 @@ app.get("/{*splat}", (req, res) => {
 // ==========================================
 
 async function startServer() {
-    await pool.query(`
-    CREATE TABLE IF NOT EXISTS player_photos (
-        id BIGSERIAL PRIMARY KEY,
-        player_type VARCHAR(20) NOT NULL
-            CHECK (player_type IN ('scoreboards', 'challenge')),
-        player_id VARCHAR(100) NOT NULL,
-        player_name VARCHAR(60) NOT NULL,
-        photo_url TEXT NOT NULL,
-        public_id TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (player_type, player_id)
-    )
-`);
-
+    await createPlayerPhotosTable();
     await createSupportTables();
 
     app.listen(PORT, () => {
         console.log("Academia Storm iniciada na porta " + PORT);
         console.log("Scoreboards board: " + BOARD_ID);
         console.log("PostgreSQL conectado.");
+        console.log("Tabela de fotos verificada.");
         console.log("Tabelas do suporte verificadas.");
     });
 }
