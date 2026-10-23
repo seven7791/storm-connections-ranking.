@@ -923,6 +923,15 @@ section{
 }
 
 
+
+/* FOTOS DOS JOGADORES — CLOUDINARY */
+.ranking-player-photo, .challenge-player-photo {
+    width: 34px; height: 34px; object-fit: cover; border-radius: 6px;
+    border: 1px solid rgba(0,170,255,.65); vertical-align: middle; margin-right: 10px;
+}
+.challenge-player { display: flex; align-items: center; gap: 2px; }
+.ranking-player-photo { margin-right: 9px; }
+
 /* SCROLLBAR */
 
 ::-webkit-scrollbar{
@@ -955,7 +964,7 @@ section{
     <div class="logo">
 
         <div class="logo-icon">
-    <img src="/logo.png" alt="Logo Academia Storm">
+          <img src="/logo.png" alt="Logo Academia Storm">
 </div>
 
         <div class="logo-text">
@@ -1575,6 +1584,26 @@ const fotosJogadores = {
    ========================================================= */
 
 let rankingJogadores = [];
+let fotosCloudinary = { scoreboards: new Map(), challenge: new Map() };
+
+async function carregarFotosCloudinary(){
+    try {
+        const r = await fetch("/api/player-photos", { cache: "no-store" });
+        if (!r.ok) return;
+        const fotos = await r.json();
+        fotosCloudinary = { scoreboards: new Map(), challenge: new Map() };
+        for (const foto of (Array.isArray(fotos) ? fotos : [])) {
+            if (foto.player_type && foto.player_id && foto.photo_url) {
+                fotosCloudinary[foto.player_type]?.set(String(foto.player_id), foto.photo_url);
+            }
+        }
+    } catch (e) { console.warn("Fotos do Cloudinary indisponíveis:", e); }
+}
+
+function fotoCloudinary(jogador, tipo = "scoreboards") {
+    const id = jogador?.player_id ?? jogador?.playerId ?? jogador?.id ?? jogador?.entry_id;
+    return id != null ? (fotosCloudinary[tipo]?.get(String(id)) || null) : null;
+}
 
 let partidasHistorico = [];
 
@@ -1598,7 +1627,9 @@ function normalizarNome(nome){
    FOTO
    ========================================================= */
 
-function obterFotoJogador(nome){
+function obterFotoJogador(nome, jogador = null, tipo = "scoreboards"){
+    const fotoRemota = fotoCloudinary(jogador, tipo);
+    if (fotoRemota) return fotoRemota;
 
     const nomeNormalizado =
         normalizarNome(nome);
@@ -2734,7 +2765,15 @@ async function atualizarRanking(){
                     linha.querySelector(
                         ".player-name"
                     );
-
+                const fotoRanking = obterFotoJogador(nome, jogador, "scoreboards");
+                if (fotoRanking) {
+                    const imagem = document.createElement("img");
+                    imagem.src = fotoRanking;
+                    imagem.alt = "Foto de " + nome;
+                    imagem.className = "ranking-player-photo";
+                    imagem.loading = "lazy";
+                    nomeElemento.parentElement.insertBefore(imagem, nomeElemento);
+                }
 
                 nomeElemento.addEventListener(
                     "click",
@@ -2834,7 +2873,7 @@ function atualizarJogadoresCards(
 
             const foto =
                 obterFotoJogador(
-                    nome
+                    nome, jogador, "scoreboards"
                 );
 
 
@@ -2990,7 +3029,7 @@ async function abrirPerfil(
 
     const foto =
         obterFotoJogador(
-            nome
+            nome, jogador, "scoreboards"
         );
 
 
@@ -3566,7 +3605,19 @@ async function atualizarRankingDesafios() {
             posicao.textContent = jogador.rank_position ?? indice + 1;
 
             nome.className = "challenge-player";
-            nome.textContent = jogador.player_name ?? "Jogador";
+            const nomeJogador = jogador.player_name ?? "Jogador";
+            const fotoDesafio = obterFotoJogador(nomeJogador, jogador, "challenge");
+            if (fotoDesafio) {
+                const imagem = document.createElement("img");
+                imagem.src = fotoDesafio;
+                imagem.alt = "Foto de " + nomeJogador;
+                imagem.className = "challenge-player-photo";
+                imagem.loading = "lazy";
+                nome.appendChild(imagem);
+            }
+            const textoNome = document.createElement("span");
+            textoNome.textContent = nomeJogador;
+            nome.appendChild(textoNome);
 
             linha.append(posicao, nome);
             corpo.appendChild(linha);
@@ -3619,6 +3670,8 @@ setInterval(
 
 setInterval(atualizarRankingDesafios, 30000);
 
+
+carregarFotosCloudinary().then(() => { atualizarRanking(); atualizarRankingDesafios(); });
 </script>
 
 

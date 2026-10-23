@@ -105,6 +105,11 @@
     th { color: #57b8ff; }
 
     .actions { white-space: nowrap; }
+    .photo-tools { min-width: 210px; }
+    .photo-preview { width: 44px; height: 44px; object-fit: cover; border-radius: 7px; display: block; margin: 5px 0; border: 1px solid #426487; }
+    .photo-input { max-width: 220px; font-size: 13px; }
+    .photo-status { display:block; color:#9fb2cc; font-size:13px; }
+    .player-list-photo { width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px; }
 
     #message {
       min-height: 25px;
@@ -227,6 +232,17 @@
       </div>
     </div>
 
+
+    <div class="panel" id="scoreboardsPhotosPanel">
+      <h2>Fotos do ranking principal (Scoreboards.dev)</h2>
+      <p class="muted">Selecione a foto do jogador do ranking principal. O identificador é obtido do Scoreboards, sem alterar ELO ou resultados.</p>
+      <button type="button" id="refreshScoreboardsPlayers">Atualizar jogadores</button>
+      <div style="overflow-x:auto">
+        <table><thead><tr><th>Jogador</th><th>Foto</th><th>Enviar</th></tr></thead>
+        <tbody id="scoreboardsPlayersBody"><tr><td colspan="4">Carregando...</td></tr></tbody></table>
+      </div>
+    </div>
+
     <div id="rankingSection">
 
       <div class="panel">
@@ -271,13 +287,14 @@
               <tr>
                 <th>Pos.</th>
                 <th>Jogador</th>
+                <th>Foto</th>
                 <th>Ações</th>
               </tr>
             </thead>
 
             <tbody id="playersBody">
               <tr>
-                <td colspan="3">Carregando...</td>
+                <td colspan="4">Carregando...</td>
               </tr>
             </tbody>
           </table>
@@ -324,6 +341,58 @@
     return data;
   }
 
+  async function enviarFoto(tipo, id, nome, input, statusEl) {
+    const file = input.files && input.files[0];
+    if (!file) { notify("Escolha uma imagem primeiro."); return; }
+    if (!file.type.startsWith("image/")) { notify("Escolha um arquivo de imagem."); return; }
+    if (file.size > 5 * 1024 * 1024) { notify("A imagem deve ter no máximo 5 MB."); return; }
+    const form = new FormData();
+    form.append("photo", file);
+    form.append("player_type", tipo);
+    form.append("player_id", String(id));
+    form.append("player_name", nome);
+    statusEl.textContent = "Enviando foto...";
+    try {
+      const response = await fetch("/api/admin/player-photo", { method: "POST", credentials: "same-origin", body: form });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || "Não foi possível enviar a foto.");
+      statusEl.textContent = "Foto salva!";
+      notify("Foto de " + nome + " atualizada.");
+      if (tipo === "challenge") await loadPlayers(); else await loadScoreboardsPlayers();
+    } catch (error) { statusEl.textContent = error.message; notify(error.message); }
+  }
+
+  async function loadScoreboardsPlayers() {
+    const body = document.getElementById("scoreboardsPlayersBody");
+    if (!body) return;
+    body.replaceChildren();
+    try {
+      const result = await api("/api/ranking?limit=200");
+      const players = Array.isArray(result) ? result : Array.isArray(result.entries) ? result.entries : Array.isArray(result.data) ? result.data : [];
+      if (!players.length) { const row = body.insertRow(); const cell = row.insertCell(); cell.colSpan = 3; cell.textContent = "Nenhum jogador encontrado no Scoreboards."; return; }
+      const photosResponse = await api("/api/player-photos");
+      const photoMap = new Map((Array.isArray(photosResponse) ? photosResponse : []).filter(p => p.player_type === "scoreboards").map(p => [String(p.player_id), p.photo_url]));
+      players.forEach(player => {
+        const id = player.player_id ?? player.playerId ?? player.id ?? player.entry_id;
+        const name = player.player_name ?? player.playerName ?? player.name ?? player.username ?? "Jogador";
+        if (id == null) return;
+        const row = body.insertRow();
+        const nameCell = row.insertCell();
+        const photoUrl = photoMap.get(String(id));
+        if (photoUrl) { const img = document.createElement("img"); img.src = photoUrl; img.alt = "Foto de " + name; img.className = "player-list-photo"; nameCell.appendChild(img); }
+        nameCell.appendChild(document.createTextNode(name));
+        const photoCell = row.insertCell(); photoCell.className = "photo-tools";
+        if (photoUrl) { const img = document.createElement("img"); img.src = photoUrl; img.alt = "Foto atual"; img.className = "photo-preview"; photoCell.appendChild(img); } else { photoCell.textContent = "Sem foto"; }
+        const actionCell = row.insertCell();
+        const input = document.createElement("input"); input.type = "file"; input.accept = "image/*"; input.className = "photo-input"; input.setAttribute("aria-label", "Selecionar foto para " + name);
+        const button = document.createElement("button"); button.type = "button"; button.textContent = "Enviar foto";
+        const status = document.createElement("span"); status.className = "photo-status";
+        button.addEventListener("click", () => enviarFoto("scoreboards", id, name, input, status));
+        actionCell.append(input, button, status);
+      });
+    } catch (error) { const row = body.insertRow(); const cell = row.insertCell(); cell.colSpan = 3; cell.textContent = error.message; }
+  }
+
   function notify(text) {
     message.textContent = text;
   }
@@ -337,6 +406,7 @@
 
       if (data.authenticated) {
         await loadPlayers();
+        await loadScoreboardsPlayers();
       }
     } catch {
       notify(
@@ -371,6 +441,8 @@
     window.location.href = "/admin-suporte";
   });
 
+  document.getElementById("refreshScoreboardsPlayers").addEventListener("click", loadScoreboardsPlayers);
+
   document.getElementById("rankingButton").addEventListener("click", () => {
     rankingSection.scrollIntoView({
       behavior: "smooth",
@@ -387,7 +459,7 @@
       if (!Array.isArray(players) || !players.length) {
         const row = playersBody.insertRow();
         const cell = row.insertCell();
-        cell.colSpan = 3;
+        cell.colSpan = 4;
         cell.textContent = "Nenhum jogador cadastrado.";
         return;
       }
@@ -404,6 +476,15 @@
         nameInput.maxLength = 60;
         nameInput.setAttribute("aria-label", "Nome do jogador");
         nameCell.appendChild(nameInput);
+
+        const photoCell = row.insertCell();
+        photoCell.className = "photo-tools";
+        if (player.photo_url) { const preview = document.createElement("img"); preview.src = player.photo_url; preview.alt = "Foto de " + player.player_name; preview.className = "photo-preview"; photoCell.appendChild(preview); } else { photoCell.textContent = "Sem foto"; }
+        const photoInput = document.createElement("input"); photoInput.type = "file"; photoInput.accept = "image/*"; photoInput.className = "photo-input"; photoInput.setAttribute("aria-label", "Selecionar foto de " + player.player_name);
+        const photoButton = document.createElement("button"); photoButton.type = "button"; photoButton.textContent = "Enviar foto";
+        const photoStatus = document.createElement("span"); photoStatus.className = "photo-status";
+        photoButton.addEventListener("click", () => enviarFoto("challenge", player.id, player.player_name, photoInput, photoStatus));
+        photoCell.append(photoInput, photoButton, photoStatus);
 
         const actionsCell = row.insertCell();
         actionsCell.className = "actions";
