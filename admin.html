@@ -229,6 +229,17 @@
             Abrir Central de Suporte
           </button>
         </div>
+
+        <div class="shortcut">
+          <h2>📡 Plataforma de Transmissões</h2>
+          <p>
+            Gerencie contas, narradores, canais, transmissões ao vivo
+            e aprove as indicações de moderadores.
+          </p>
+          <button type="button" id="openPlatformButton">
+            Gerenciar transmissões
+          </button>
+        </div>
       </div>
     </div>
 
@@ -439,6 +450,10 @@
 
   document.getElementById("openSupportButton").addEventListener("click", () => {
     window.location.href = "/admin-suporte";
+  });
+
+  document.getElementById("openPlatformButton").addEventListener("click", () => {
+    window.location.href = "/admin-plataforma";
   });
 
   document.getElementById("refreshScoreboardsPlayers").addEventListener("click", loadScoreboardsPlayers);

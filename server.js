@@ -1,6 +1,9 @@
 require("dotenv").config();
 
 const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const { AccessToken, RoomServiceClient } = require("livekit-server-sdk");
 const path = require("path");
 const session = require("express-session");
 const PgSession = require("connect-pg-simple")(session);
@@ -81,7 +84,7 @@ app.set("trust proxy", 1);
 
 app.use(express.json({ limit: "20kb" }));
 
-app.use(session({
+const sessionMiddleware = session({
     store: new PgSession({
         pool,
         tableName: "user_sessions",
@@ -96,7 +99,9 @@ app.use(session({
         sameSite: "lax",
         maxAge: 8 * 60 * 60 * 1000
     }
-}));
+});
+
+app.use(sessionMiddleware);
 
 app.use(express.static(__dirname));
 
@@ -121,6 +126,109 @@ async function createPlayerPhotosTable() {
     `);
 
     console.log("Tabela player_photos verificada.");
+}
+
+// ==========================================
+// CONTAS, CANAIS, MODERAÇÃO E TRANSMISSÕES
+// ==========================================
+
+async function createLivePlatformTables() {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_users (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(32) NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role VARCHAR(20) NOT NULL DEFAULT 'viewer'
+                CHECK (role IN ('viewer', 'narrator', 'admin')),
+            is_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS storm_users_username_lower_idx
+        ON storm_users (LOWER(username))
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_channels (
+            id BIGSERIAL PRIMARY KEY,
+            owner_user_id BIGINT NOT NULL REFERENCES storm_users(id),
+            title VARCHAR(80) NOT NULL,
+            slug VARCHAR(100) NOT NULL UNIQUE,
+            description VARCHAR(500) NOT NULL DEFAULT '',
+            banner_url TEXT,
+            visibility VARCHAR(12) NOT NULL DEFAULT 'public'
+                CHECK (visibility IN ('public', 'private')),
+            access_code_hash TEXT,
+            is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            transmission_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+            live_status VARCHAR(12) NOT NULL DEFAULT 'offline'
+                CHECK (live_status IN ('offline', 'live')),
+            live_room_name VARCHAR(120),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CHECK ((visibility = 'public') OR access_code_hash IS NOT NULL)
+        )
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_channel_moderators (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES storm_channels(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES storm_users(id) ON DELETE CASCADE,
+            request_status VARCHAR(12) NOT NULL DEFAULT 'pending'
+                CHECK (request_status IN ('pending', 'approved', 'rejected')),
+            requested_by BIGINT REFERENCES storm_users(id),
+            reviewed_by BIGINT REFERENCES storm_users(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_at TIMESTAMPTZ,
+            UNIQUE(channel_id, user_id)
+        )
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_channel_comments (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES storm_channels(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES storm_users(id) ON DELETE CASCADE,
+            username VARCHAR(32) NOT NULL,
+            message VARCHAR(1000) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    `);
+
+    await pool.query(`
+        CREATE INDEX IF NOT EXISTS storm_comments_channel_idx
+        ON storm_channel_comments(channel_id, created_at DESC)
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_channel_user_actions (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES storm_channels(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES storm_users(id) ON DELETE CASCADE,
+            action_type VARCHAR(12) NOT NULL CHECK (action_type IN ('timeout', 'ban')),
+            expires_at TIMESTAMPTZ,
+            created_by BIGINT REFERENCES storm_users(id),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(channel_id, user_id)
+        )
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS storm_live_sessions (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES storm_channels(id) ON DELETE CASCADE,
+            room_name VARCHAR(120) NOT NULL UNIQUE,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ended_at TIMESTAMPTZ,
+            ended_by BIGINT REFERENCES storm_users(id)
+        )
+    `);
+
+    console.log("Tabelas da plataforma de transmissões verificadas.");
 }
 
 // ==========================================
@@ -1430,8 +1538,611 @@ app.delete(
 );
 
 // ==========================================
+// AUTENTICAÇÃO DE CONTAS DA COMUNIDADE
+// ==========================================
+
+function requireAccount(req, res, next) {
+    if (!req.session?.userId) {
+        return res.status(401).json({ error: true, message: "Entre na sua conta para continuar." });
+    }
+    next();
+}
+
+async function loadAccount(req, res, next) {
+    if (req.session?.isAdmin === true && !req.session?.userId) {
+        req.account = { id: null, username: "Administrador", role: "admin", is_blocked: false };
+        return next();
+    }
+    if (!req.session?.userId) return res.status(401).json({ error: true, message: "Entre na sua conta." });
+    try {
+        const result = await pool.query(
+            "SELECT id, username, role, is_blocked FROM storm_users WHERE id = $1",
+            [req.session.userId]
+        );
+        if (!result.rowCount || result.rows[0].is_blocked) {
+            return res.status(403).json({ error: true, message: "Esta conta não pode acessar a plataforma." });
+        }
+        req.account = result.rows[0];
+        next();
+    } catch (error) { sendApiError(res, error); }
+}
+
+function requireNarrator(req, res, next) {
+    if (req.account?.role === "narrator" || req.account?.role === "admin" || req.session?.isAdmin === true) return next();
+    return res.status(403).json({ error: true, message: "Somente narradores podem realizar esta ação." });
+}
+
+function requirePlatformAdmin(req, res, next) {
+    if (req.session?.isAdmin === true) return next();
+    return res.status(403).json({ error: true, message: "Apenas o administrador da Academia Storm pode realizar esta ação." });
+}
+
+function slugify(value) {
+    return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+}
+
+function saveSession(req) {
+    return new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
+}
+
+app.post("/api/auth/register", async (req, res) => {
+    const username = cleanText(req.body?.username);
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!/^[a-zA-Z0-9_]{3,32}$/.test(username)) {
+        return res.status(400).json({ error: true, message: "O usuário deve ter de 3 a 32 caracteres: letras, números ou _." });
+    }
+    if (password.length < 8 || password.length > 72) {
+        return res.status(400).json({ error: true, message: "A senha deve ter entre 8 e 72 caracteres." });
+    }
+    try {
+        const hash = await bcrypt.hash(password, 12);
+        const result = await pool.query(
+            `INSERT INTO storm_users (username, password_hash) VALUES ($1, $2)
+             RETURNING id, username, role`, [username, hash]
+        );
+        req.session.regenerate(async error => {
+            if (error) return res.status(500).json({ error: true, message: "Não foi possível iniciar sua sessão." });
+            req.session.userId = result.rows[0].id;
+            try { await saveSession(req); res.status(201).json({ success: true, user: result.rows[0] }); }
+            catch { res.status(500).json({ error: true, message: "Não foi possível salvar sua sessão." }); }
+        });
+    } catch (error) {
+        if (error.code === "23505") return res.status(409).json({ error: true, message: "Esse nome de usuário já está em uso." });
+        sendApiError(res, error);
+    }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+    const username = cleanText(req.body?.username);
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    try {
+        const result = await pool.query(
+            "SELECT id, username, password_hash, role, is_blocked FROM storm_users WHERE LOWER(username) = LOWER($1)", [username]
+        );
+        const user = result.rows[0];
+        if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+            return res.status(401).json({ error: true, message: "Usuário ou senha incorretos." });
+        }
+        if (user.is_blocked) return res.status(403).json({ error: true, message: "Esta conta está bloqueada." });
+        req.session.regenerate(error => {
+            if (error) return res.status(500).json({ error: true, message: "Não foi possível iniciar sua sessão." });
+            req.session.userId = user.id;
+            req.session.save(saveError => {
+                if (saveError) return res.status(500).json({ error: true, message: "Não foi possível salvar sua sessão." });
+                res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+            });
+        });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/auth/session", async (req, res) => {
+    if (!req.session?.userId) return res.json({ authenticated: false });
+    try {
+        const result = await pool.query(
+            "SELECT id, username, role, is_blocked FROM storm_users WHERE id = $1", [req.session.userId]
+        );
+        if (!result.rowCount || result.rows[0].is_blocked) return res.json({ authenticated: false });
+        const { is_blocked, ...user } = result.rows[0];
+        res.set("Cache-Control", "no-store").json({ authenticated: true, user });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy(error => {
+        if (error) return res.status(500).json({ error: true, message: "Não foi possível sair." });
+        res.clearCookie("connect.sid", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" });
+        res.json({ success: true });
+    });
+});
+
+// ==========================================
+// CANAIS
+// ==========================================
+
+app.get("/api/channels", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.visibility,
+                   c.live_status, c.created_at, u.username AS narrator
+            FROM storm_channels c JOIN storm_users u ON u.id = c.owner_user_id
+            WHERE c.is_enabled = TRUE AND u.is_blocked = FALSE
+              AND c.visibility = 'public'
+            ORDER BY (c.live_status = 'live') DESC, c.created_at DESC
+        `);
+        res.set("Cache-Control", "no-store").json(result.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/channels/:slug", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.visibility,
+                   c.live_status, c.is_enabled, c.transmission_blocked,
+                   c.owner_user_id, u.username AS narrator
+            FROM storm_channels c JOIN storm_users u ON u.id = c.owner_user_id
+            WHERE c.slug = $1
+        `, [req.params.slug]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        const channel = result.rows[0];
+        channel.is_owner = Number(req.session?.userId) === Number(channel.owner_user_id);
+        if (!channel.is_enabled && !req.session?.isAdmin) return res.status(404).json({ error: true, message: "Canal indisponível." });
+        if (channel.visibility === "private" && !req.session?.isAdmin && !req.session?.privateChannelAccess?.[String(channel.id)]) {
+            const safe = { ...channel, private: true };
+            delete safe.owner_user_id; delete safe.transmission_blocked; delete safe.is_enabled;
+            return res.json({ ...safe, access_required: true });
+        }
+        delete channel.owner_user_id;
+        delete channel.transmission_blocked;
+        delete channel.is_enabled;
+        res.json(channel);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels", loadAccount, requireNarrator, async (req, res) => {
+    const title = cleanText(req.body?.title);
+    const description = cleanText(req.body?.description).slice(0, 500);
+    const visibility = req.body?.visibility === "private" ? "private" : "public";
+    const accessCode = typeof req.body?.access_code === "string" ? req.body.access_code : "";
+    if (title.length < 3 || title.length > 80) return res.status(400).json({ error: true, message: "O nome do canal deve ter entre 3 e 80 caracteres." });
+    if (visibility === "private" && accessCode.length < 4) return res.status(400).json({ error: true, message: "Canais privados precisam de um código com pelo menos 4 caracteres." });
+    try {
+        let ownerId = req.account.id;
+        if (req.account.role === "admin" && req.body?.narrator_id) {
+            const narrator = await pool.query("SELECT id FROM storm_users WHERE id = $1 AND role = 'narrator' AND is_blocked = FALSE", [req.body.narrator_id]);
+            if (!narrator.rowCount) return res.status(400).json({ error: true, message: "Selecione uma conta ativa com função de narrador." });
+            ownerId = narrator.rows[0].id;
+        }
+        if (!ownerId) return res.status(400).json({ error: true, message: "Informe o ID de uma conta de narrador para criar o canal." });
+        let slug = slugify(title) || "canal";
+        slug += "-" + crypto.randomBytes(3).toString("hex");
+        const codeHash = visibility === "private" ? await bcrypt.hash(accessCode, 12) : null;
+        const result = await pool.query(`
+            INSERT INTO storm_channels (owner_user_id, title, slug, description, visibility, access_code_hash)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, title, slug, description, visibility, created_at
+        `, [ownerId, title, slug, description, visibility, codeHash]);
+        res.status(201).json({ success: true, channel: result.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.patch("/api/channels/:id", loadAccount, async (req, res) => {
+    const id = req.params.id;
+    if (!validNumericId(id)) return res.status(400).json({ error: true, message: "Canal inválido." });
+    try {
+        const current = await pool.query("SELECT * FROM storm_channels WHERE id = $1", [id]);
+        if (!current.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (req.account.role !== "admin" && (Number(current.rows[0].owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator")) {
+            return res.status(403).json({ error: true, message: "Somente o narrador responsável pode editar este canal." });
+        }
+        const title = req.body?.title === undefined ? current.rows[0].title : cleanText(req.body.title);
+        const description = req.body?.description === undefined ? current.rows[0].description : cleanText(req.body.description).slice(0, 500);
+        const visibility = req.body?.visibility === "private" || req.body?.visibility === "public" ? req.body.visibility : current.rows[0].visibility;
+        let codeHash = current.rows[0].access_code_hash;
+        if (visibility === "private" && req.body?.access_code) {
+            if (String(req.body.access_code).length < 4) return res.status(400).json({ error: true, message: "O código deve ter pelo menos 4 caracteres." });
+            codeHash = await bcrypt.hash(String(req.body.access_code), 12);
+        }
+        if (visibility === "private" && !codeHash) return res.status(400).json({ error: true, message: "Defina um código de acesso para o canal privado." });
+        const updated = await pool.query(`
+            UPDATE storm_channels SET title = $1, description = $2, visibility = $3,
+                access_code_hash = $4, updated_at = NOW() WHERE id = $5
+            RETURNING id, title, slug, description, visibility, live_status
+        `, [title, description, visibility, codeHash, id]);
+        res.json({ success: true, channel: updated.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:id/access", async (req, res) => {
+    const code = typeof req.body?.access_code === "string" ? req.body.access_code : "";
+    try {
+        const result = await pool.query("SELECT id, access_code_hash, is_enabled FROM storm_channels WHERE id = $1 AND visibility = 'private'", [req.params.id]);
+        if (!result.rowCount || !result.rows[0].is_enabled || !(await bcrypt.compare(code, result.rows[0].access_code_hash))) {
+            return res.status(403).json({ error: true, message: "Código incorreto ou canal indisponível." });
+        }
+        req.session.privateChannelAccess = req.session.privateChannelAccess || {};
+        req.session.privateChannelAccess[String(req.params.id)] = true;
+        await saveSession(req);
+        res.json({ success: true, access_granted: true });
+    } catch (error) { sendApiError(res, error); }
+});
+
+// ==========================================
+// NARRADORES E MODERADORES
+// ==========================================
+
+app.post("/api/channels/:id/moderator-requests", loadAccount, async (req, res) => {
+    const username = cleanText(req.body?.username);
+    try {
+        const channelResult = await pool.query("SELECT id, owner_user_id FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!channelResult.rowCount || Number(channelResult.rows[0].owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator") return res.status(403).json({ error: true, message: "Somente o narrador do canal pode indicar moderadores." });
+        const target = await pool.query("SELECT id, username FROM storm_users WHERE LOWER(username) = LOWER($1) AND is_blocked = FALSE", [username]);
+        if (!target.rowCount) return res.status(404).json({ error: true, message: "Usuário não encontrado." });
+        const result = await pool.query(`
+            INSERT INTO storm_channel_moderators (channel_id, user_id, requested_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (channel_id, user_id) DO UPDATE SET
+                request_status = 'pending', requested_by = EXCLUDED.requested_by,
+                reviewed_by = NULL, reviewed_at = NULL
+            RETURNING id, request_status
+        `, [req.params.id, target.rows[0].id, req.account.id]);
+        res.status(201).json({ success: true, request: result.rows[0], message: "Indicação enviada para aprovação do administrador." });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/admin/platform/users", requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query("SELECT id, username, role, is_blocked, created_at FROM storm_users ORDER BY created_at DESC LIMIT 500");
+        res.json(result.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.patch("/api/admin/platform/users/:id", requireAdmin, async (req, res) => {
+    const role = req.body?.role;
+    const blocked = req.body?.is_blocked;
+    if (role !== undefined && !["viewer", "narrator"].includes(role)) return res.status(400).json({ error: true, message: "Função inválida." });
+    if (blocked !== undefined && typeof blocked !== "boolean") return res.status(400).json({ error: true, message: "Estado de bloqueio inválido." });
+    try {
+        const result = await pool.query(`
+            UPDATE storm_users SET role = COALESCE($1, role),
+                is_blocked = COALESCE($2, is_blocked), updated_at = NOW()
+            WHERE id = $3 RETURNING id, username, role, is_blocked
+        `, [role ?? null, blocked ?? null, req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Usuário não encontrado." });
+        if (result.rows[0].is_blocked || result.rows[0].role === "viewer") {
+            const owned = await pool.query("SELECT id FROM storm_channels WHERE owner_user_id = $1 AND live_status = 'live'", [req.params.id]);
+            for (const channel of owned.rows) await stopChannelLive(channel.id, req.session.userId || null);
+        }
+        res.json({ success: true, user: result.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/admin/platform/channels", requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT c.id, c.owner_user_id, c.title, c.slug, c.description, c.banner_url,
+                   c.visibility, c.is_enabled, c.transmission_blocked, c.live_status,
+                   c.created_at, u.username AS narrator
+            FROM storm_channels c JOIN storm_users u ON u.id = c.owner_user_id
+            ORDER BY c.created_at DESC
+        `);
+        res.json(result.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.patch("/api/admin/platform/channels/:id", requireAdmin, async (req, res) => {
+    const enabled = req.body?.is_enabled;
+    const blocked = req.body?.transmission_blocked;
+    if (enabled !== undefined && typeof enabled !== "boolean") return res.status(400).json({ error: true, message: "Estado do canal inválido." });
+    if (blocked !== undefined && typeof blocked !== "boolean") return res.status(400).json({ error: true, message: "Estado da transmissão inválido." });
+    try {
+        const result = await pool.query(`
+            UPDATE storm_channels SET is_enabled = COALESCE($1, is_enabled),
+                transmission_blocked = COALESCE($2, transmission_blocked), updated_at = NOW()
+            WHERE id = $3 RETURNING id, is_enabled, transmission_blocked, live_status
+        `, [enabled ?? null, blocked ?? null, req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (blocked === true || enabled === false) await stopChannelLive(req.params.id, req.session.userId || null);
+        res.json({ success: true, channel: result.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/admin/platform/moderator-requests", requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT m.id, m.channel_id, c.title AS channel_title, u.id AS user_id,
+                   u.username, m.request_status, requester.username AS requested_by,
+                   m.created_at
+            FROM storm_channel_moderators m
+            JOIN storm_channels c ON c.id = m.channel_id
+            JOIN storm_users u ON u.id = m.user_id
+            LEFT JOIN storm_users requester ON requester.id = m.requested_by
+            WHERE m.request_status = 'pending' ORDER BY m.created_at ASC
+        `);
+        res.json(result.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.patch("/api/admin/platform/moderator-requests/:id", requireAdmin, async (req, res) => {
+    const decision = req.body?.decision;
+    if (!['approved', 'rejected'].includes(decision)) return res.status(400).json({ error: true, message: "Decisão inválida." });
+    try {
+        const result = await pool.query(`
+            UPDATE storm_channel_moderators SET request_status = $1,
+                reviewed_by = (SELECT id FROM storm_users WHERE id = $2), reviewed_at = NOW()
+            WHERE id = $3 AND request_status = 'pending'
+            RETURNING id, channel_id, user_id, request_status
+        `, [decision, req.session.userId || null, req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Indicação não encontrada ou já analisada." });
+        res.json({ success: true, request: result.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/channels/:id/moderators", loadAccount, async (req, res) => {
+    try {
+        const owner = await pool.query("SELECT owner_user_id FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!owner.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (req.account.role !== "admin" && Number(owner.rows[0].owner_user_id) !== Number(req.account.id)) return res.status(403).json({ error: true, message: "Somente o narrador pode consultar a equipe de moderação." });
+        const result = await pool.query(`
+            SELECT m.id, u.id AS user_id, u.username, m.request_status, m.created_at, m.reviewed_at
+            FROM storm_channel_moderators m JOIN storm_users u ON u.id = m.user_id
+            WHERE m.channel_id = $1 ORDER BY m.created_at DESC
+        `, [req.params.id]);
+        res.json(result.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.delete("/api/channels/:id/moderators/:userId", loadAccount, async (req, res) => {
+    try {
+        const owner = await pool.query("SELECT owner_user_id FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!owner.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (req.account.role !== "admin" && (Number(owner.rows[0].owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator")) return res.status(403).json({ error: true, message: "Somente o narrador pode remover moderadores deste canal." });
+        await pool.query("DELETE FROM storm_channel_moderators WHERE channel_id = $1 AND user_id = $2", [req.params.id, req.params.userId]);
+        res.json({ success: true });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/channels/:id/live-history", async (req, res) => {
+    try {
+        const channel = await pool.query("SELECT visibility FROM storm_channels WHERE id = $1 AND is_enabled = TRUE", [req.params.id]);
+        if (!channel.rowCount) return res.status(404).json({ error: true, message: "Canal indisponível." });
+        if (channel.rows[0].visibility === "private" && !req.session?.privateChannelAccess?.[String(req.params.id)] && !req.session?.isAdmin) return res.status(403).json({ error: true, message: "Acesso ao canal privado necessário." });
+        const history = await pool.query(`SELECT started_at, ended_at FROM storm_live_sessions WHERE channel_id = $1 ORDER BY started_at DESC LIMIT 30`, [req.params.id]);
+        res.json(history.rows);
+    } catch (error) { sendApiError(res, error); }
+});
+
+// ==========================================
+// LIVEKIT: INÍCIO, TOKEN E ENCERRAMENTO
+// ==========================================
+
+function getLiveKitRoomService() {
+    const host = process.env.LIVEKIT_URL;
+    const key = process.env.LIVEKIT_API_KEY;
+    const secret = process.env.LIVEKIT_API_SECRET;
+    if (!host || !key || !secret) throw new Error("Configure LIVEKIT_URL, LIVEKIT_API_KEY e LIVEKIT_API_SECRET no Render.");
+    const httpHost = host.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
+    return new RoomServiceClient(httpHost, key, secret);
+}
+
+async function stopChannelLive(channelId, endedBy) {
+    const current = await pool.query("SELECT live_room_name FROM storm_channels WHERE id = $1", [channelId]);
+    if (!current.rowCount) return;
+    const roomName = current.rows[0].live_room_name;
+    if (roomName && process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET) {
+        try { await getLiveKitRoomService().deleteRoom(roomName); } catch (error) { console.warn("Não foi possível encerrar a sala LiveKit:", error.message); }
+    }
+    await pool.query("UPDATE storm_live_sessions SET ended_at = NOW(), ended_by = $1 WHERE channel_id = $2 AND ended_at IS NULL", [endedBy, channelId]);
+    await pool.query("UPDATE storm_channels SET live_status = 'offline', live_room_name = NULL, updated_at = NOW() WHERE id = $1", [channelId]);
+    io.to("channel:" + channelId).emit("live:ended", { channel_id: Number(channelId) });
+}
+
+app.post("/api/channels/:id/live/start", loadAccount, async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        const channel = result.rows[0];
+        if (req.account.role !== "admin" && (Number(channel.owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator")) return res.status(403).json({ error: true, message: "Somente o narrador deste canal pode transmitir." });
+        if (!channel.is_enabled) return res.status(403).json({ error: true, message: "Este canal está desativado." });
+        if (channel.transmission_blocked || req.account.is_blocked) return res.status(403).json({ error: true, message: "A transmissão deste canal está bloqueada." });
+        if (channel.live_status === "live") return res.status(409).json({ error: true, message: "Este canal já está ao vivo." });
+        const roomName = "storm-channel-" + channel.id;
+        await getLiveKitRoomService(); // valida configuração antes de marcar como ao vivo
+        await pool.query("UPDATE storm_channels SET live_status = 'live', live_room_name = $1, updated_at = NOW() WHERE id = $2", [roomName, channel.id]);
+        await pool.query("INSERT INTO storm_live_sessions (channel_id, room_name) VALUES ($1, $2)", [channel.id, roomName]);
+        io.to("channels").emit("channel:updated", { channel_id: Number(channel.id), live_status: "live" });
+        res.json({ success: true, live_status: "live", room_name: roomName });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:id/live/stop", loadAccount, async (req, res) => {
+    try {
+        const result = await pool.query("SELECT owner_user_id FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (Number(result.rows[0].owner_user_id) !== Number(req.account.id) && req.account.role !== "admin") return res.status(403).json({ error: true, message: "Você não pode encerrar esta transmissão." });
+        await stopChannelLive(req.params.id, req.account.id);
+        res.json({ success: true, live_status: "offline" });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/admin/platform/channels/:id/live/stop", requireAdmin, async (req, res) => {
+    try { await stopChannelLive(req.params.id, req.session.userId || null); res.json({ success: true, live_status: "offline" }); }
+    catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:id/live-token", async (req, res) => {
+    const channelId = req.params.id;
+    try {
+        const result = await pool.query(`
+            SELECT c.*, u.is_blocked AS owner_blocked FROM storm_channels c
+            JOIN storm_users u ON u.id = c.owner_user_id WHERE c.id = $1
+        `, [channelId]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        const channel = result.rows[0];
+        if (!channel.is_enabled || channel.live_status !== "live" || !channel.live_room_name) return res.status(409).json({ error: true, message: "Este canal não está ao vivo." });
+        if (channel.visibility === "private" && !req.session?.isAdmin && !req.session?.privateChannelAccess?.[String(channelId)]) {
+            return res.status(403).json({ error: true, message: "Informe o código de acesso do canal privado." });
+        }
+        const isOwner = Number(req.session?.userId) === Number(channel.owner_user_id);
+        let accountRole = null;
+        if (req.session?.userId) {
+            const account = await pool.query("SELECT role, is_blocked FROM storm_users WHERE id = $1", [req.session.userId]);
+            if (account.rowCount && account.rows[0].is_blocked) return res.status(403).json({ error: true, message: "Esta conta está bloqueada." });
+            if (account.rowCount) accountRole = account.rows[0].role;
+        }
+        const isAdmin = req.session?.isAdmin === true || accountRole === "admin";
+        const isPublisher = ((isOwner && !channel.owner_blocked) || isAdmin) && !channel.transmission_blocked;
+        const identity = req.session?.userId ? "user-" + req.session.userId : "guest-" + crypto.randomBytes(8).toString("hex");
+        const token = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, { identity, ttl: "2h" });
+        token.addGrant({ roomJoin: true, room: channel.live_room_name, canPublish: isPublisher, canSubscribe: true });
+        res.json({ token: await token.toJwt(), server_url: process.env.LIVEKIT_URL, can_publish: isPublisher });
+    } catch (error) { sendApiError(res, error); }
+});
+
+// ==========================================
+// CHAT, COMENTÁRIOS E MODERAÇÃO POR CANAL
+// ==========================================
+
+async function channelModerator(channelId, userId) {
+    const result = await pool.query(`SELECT 1 FROM storm_channel_moderators WHERE channel_id = $1 AND user_id = $2 AND request_status = 'approved'`, [channelId, userId]);
+    return result.rowCount > 0;
+}
+
+app.get("/api/channels/:id/permissions", async (req, res) => {
+    if (!req.session?.userId && !req.session?.isAdmin) return res.json({ authenticated: false, can_moderate: false, is_owner: false });
+    try {
+        const channel = await pool.query("SELECT owner_user_id FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!channel.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        const userId = req.session?.userId;
+        const isOwner = Number(userId) === Number(channel.rows[0].owner_user_id);
+        const isMod = userId ? await channelModerator(req.params.id, userId) : false;
+        res.json({ authenticated: true, is_owner: isOwner, can_moderate: Boolean(isOwner || isMod || req.session?.isAdmin) });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.get("/api/channels/:id/comments", async (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    try {
+        const channel = await pool.query("SELECT visibility FROM storm_channels WHERE id = $1 AND is_enabled = TRUE", [req.params.id]);
+        if (!channel.rowCount) return res.status(404).json({ error: true, message: "Canal indisponível." });
+        if (channel.rows[0].visibility === "private" && !req.session?.privateChannelAccess?.[String(req.params.id)] && !req.session?.isAdmin) return res.status(403).json({ error: true, message: "Acesso ao canal privado necessário." });
+        const comments = await pool.query(`SELECT id, user_id, username, message, created_at FROM storm_channel_comments WHERE channel_id = $1 ORDER BY created_at DESC LIMIT $2`, [req.params.id, limit]);
+        res.json(comments.rows.reverse());
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:id/comments", loadAccount, async (req, res) => {
+    const message = cleanText(req.body?.message);
+    if (message.length < 1 || message.length > 1000) return res.status(400).json({ error: true, message: "O comentário deve ter entre 1 e 1000 caracteres." });
+    try {
+        const channel = await pool.query("SELECT visibility, is_enabled FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!channel.rowCount || !channel.rows[0].is_enabled) return res.status(404).json({ error: true, message: "Canal indisponível." });
+        if (channel.rows[0].visibility === "private" && !req.session?.privateChannelAccess?.[String(req.params.id)]) return res.status(403).json({ error: true, message: "Acesso ao canal privado necessário." });
+        const action = await pool.query(`SELECT action_type, expires_at FROM storm_channel_user_actions WHERE channel_id = $1 AND user_id = $2`, [req.params.id, req.account.id]);
+        if (action.rowCount && (action.rows[0].action_type === "ban" || (action.rows[0].action_type === "timeout" && action.rows[0].expires_at && new Date(action.rows[0].expires_at) > new Date()))) return res.status(403).json({ error: true, message: "Você está impedido de comentar neste canal." });
+        const recent = await pool.query(`SELECT message, created_at FROM storm_channel_comments WHERE channel_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`, [req.params.id, req.account.id]);
+        if (recent.rowCount && recent.rows[0].message === message) return res.status(429).json({ error: true, message: "Evite enviar a mesma mensagem repetidamente." });
+        if (recent.rowCount && Date.now() - new Date(recent.rows[0].created_at).getTime() < 1200) return res.status(429).json({ error: true, message: "Aguarde um instante antes de enviar outra mensagem." });
+        const result = await pool.query(`INSERT INTO storm_channel_comments (channel_id, user_id, username, message) VALUES ($1, $2, $3, $4) RETURNING id, username, message, created_at`, [req.params.id, req.account.id, req.account.username, message]);
+        io.to("channel:" + req.params.id).emit("comment:new", result.rows[0]);
+        res.status(201).json({ success: true, comment: result.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.delete("/api/channels/:channelId/comments/:commentId", loadAccount, async (req, res) => {
+    try {
+        const comment = await pool.query("SELECT id, user_id FROM storm_channel_comments WHERE id = $1 AND channel_id = $2", [req.params.commentId, req.params.channelId]);
+        if (!comment.rowCount) return res.status(404).json({ error: true, message: "Comentário não encontrado." });
+        const isAdmin = req.session?.isAdmin === true || req.account.role === "admin";
+        const isOwner = await pool.query("SELECT 1 FROM storm_channels WHERE id = $1 AND owner_user_id = $2", [req.params.channelId, req.account.id]);
+        const isMod = await channelModerator(req.params.channelId, req.account.id);
+        if (!isAdmin && !isOwner.rowCount && !isMod) return res.status(403).json({ error: true, message: "Você não tem permissão para moderar este canal." });
+        await pool.query("DELETE FROM storm_channel_comments WHERE id = $1", [req.params.commentId]);
+        io.to("channel:" + req.params.channelId).emit("comment:deleted", { id: Number(req.params.commentId) });
+        res.json({ success: true });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:channelId/moderation/:userId", loadAccount, async (req, res) => {
+    const type = req.body?.action_type;
+    const minutes = Math.min(Math.max(Number(req.body?.minutes) || 10, 1), 10080);
+    if (!['timeout', 'ban'].includes(type)) return res.status(400).json({ error: true, message: "Ação inválida." });
+    try {
+        const isAdmin = req.session?.isAdmin === true || req.account.role === "admin";
+        const owner = await pool.query("SELECT 1 FROM storm_channels WHERE id = $1 AND owner_user_id = $2", [req.params.channelId, req.account.id]);
+        const isMod = await channelModerator(req.params.channelId, req.account.id);
+        if (!isAdmin && !owner.rowCount && !isMod) return res.status(403).json({ error: true, message: "Você não tem permissão para moderar este canal." });
+        if (!isAdmin && !owner.rowCount) {
+            const protectedTarget = await pool.query(`
+                SELECT 1 FROM storm_channels WHERE id = $1 AND owner_user_id = $2
+                UNION ALL
+                SELECT 1 FROM storm_channel_moderators WHERE channel_id = $1 AND user_id = $2 AND request_status = 'approved'
+                UNION ALL
+                SELECT 1 FROM storm_users WHERE id = $2 AND role = 'admin'
+                LIMIT 1
+            `, [req.params.channelId, req.params.userId]);
+            if (protectedTarget.rowCount) return res.status(403).json({ error: true, message: "Moderadores não podem aplicar punições ao narrador, a outros moderadores ou a administradores." });
+        }
+        const expires = type === "timeout" ? new Date(Date.now() + minutes * 60000) : null;
+        await pool.query(`INSERT INTO storm_channel_user_actions (channel_id, user_id, action_type, expires_at, created_by) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (channel_id, user_id) DO UPDATE SET action_type = EXCLUDED.action_type, expires_at = EXCLUDED.expires_at, created_by = EXCLUDED.created_by, created_at = NOW()`, [req.params.channelId, req.params.userId, type, expires, req.account.id]);
+        res.json({ success: true, action_type: type, expires_at: expires });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.delete("/api/channels/:channelId/moderation/:userId", loadAccount, async (req, res) => {
+    try {
+        const isAdmin = req.session?.isAdmin === true || req.account.role === "admin";
+        const owner = await pool.query("SELECT 1 FROM storm_channels WHERE id = $1 AND owner_user_id = $2", [req.params.channelId, req.account.id]);
+        const isMod = await channelModerator(req.params.channelId, req.account.id);
+        if (!isAdmin && !owner.rowCount && !isMod) return res.status(403).json({ error: true, message: "Você não tem permissão para moderar este canal." });
+        await pool.query("DELETE FROM storm_channel_user_actions WHERE channel_id = $1 AND user_id = $2", [req.params.channelId, req.params.userId]);
+        res.json({ success: true });
+    } catch (error) { sendApiError(res, error); }
+});
+
+// ==========================================
+// SOCKET.IO — EVENTOS EM TEMPO REAL
+// ==========================================
+
+const server = http.createServer(app);
+const io = new Server(server, { serveClient: true });
+io.engine.use(sessionMiddleware);
+io.on("connection", socket => {
+    socket.on("channel:join", async ({ channelId, accessCode } = {}, callback = () => {}) => {
+        try {
+            const result = await pool.query("SELECT visibility, access_code_hash, is_enabled FROM storm_channels WHERE id = $1", [channelId]);
+            if (!result.rowCount || !result.rows[0].is_enabled) return callback({ error: "Canal indisponível." });
+            if (result.rows[0].visibility === "private") {
+                const sessionAccess = socket.request.session?.privateChannelAccess?.[String(channelId)];
+                const validCode = accessCode && await bcrypt.compare(String(accessCode), result.rows[0].access_code_hash);
+                if (!sessionAccess && !validCode && !socket.request.session?.isAdmin) return callback({ error: "Código de acesso necessário." });
+            }
+            socket.join("channel:" + channelId);
+            callback({ success: true });
+        } catch { callback({ error: "Não foi possível entrar no canal." }); }
+    });
+    socket.on("channels:subscribe", () => socket.join("channels"));
+});
+
+// ==========================================
 // PÁGINAS DO SITE
 // ==========================================
+
+app.get("/transmissoes", (req, res) => {
+    res.sendFile(path.join(__dirname, "transmissoes.html"));
+});
+
+app.get("/canal/:slug", (req, res) => {
+    res.sendFile(path.join(__dirname, "canal.html"));
+});
+
+app.get("/conta", (req, res) => {
+    res.sendFile(path.join(__dirname, "conta.html"));
+});
+
+app.get("/admin-plataforma", (req, res) => {
+    res.sendFile(path.join(__dirname, "admin-plataforma.html"));
+});
 
 app.get("/admin", (req, res) => {
     res.sendFile(path.join(__dirname, "admin.html"));
@@ -1456,13 +2167,15 @@ app.get("/{*splat}", (req, res) => {
 async function startServer() {
     await createPlayerPhotosTable();
     await createSupportTables();
+    await createLivePlatformTables();
 
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
         console.log("Academia Storm iniciada na porta " + PORT);
         console.log("Scoreboards board: " + BOARD_ID);
         console.log("PostgreSQL conectado.");
         console.log("Tabela de fotos verificada.");
         console.log("Tabelas do suporte verificadas.");
+        console.log("Contas, canais e recursos de transmissão verificados.");
     });
 }
 

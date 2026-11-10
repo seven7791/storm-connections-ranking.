@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Minha conta | Academia Storm</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#102c4b,#050d19 65%);color:#eaf4ff;font-family:Rajdhani,sans-serif;padding:24px}.wrap{max-width:850px;margin:35px auto}.brand{color:#52baff;letter-spacing:3px;font-weight:700}.panel{background:#0d1c2f;border:1px solid #23476b;border-radius:14px;padding:26px;margin:18px 0;box-shadow:0 15px 45px #0005}h1,h2{color:#59bdff}h1{font-size:36px}label{display:block;margin:12px 0 5px}input{width:100%;padding:13px;border-radius:8px;border:1px solid #355574;background:#071425;color:white;font:inherit;font-size:18px}button,.btn{display:inline-block;border:0;border-radius:8px;background:#087fc7;color:white;padding:12px 20px;font:700 17px Rajdhani;cursor:pointer;text-decoration:none;margin-top:14px}button:hover,.btn:hover{background:#159eea}.muted{color:#9fb5ce}.msg{min-height:24px;color:#8dd3ff}.tabs{display:flex;gap:10px;flex-wrap:wrap}.tabs button{background:#263d56}.tabs button.active{background:#087fc7}.hidden{display:none!important}a{color:#68c5ff}
+</style>
+</head>
+<body><main class="wrap"><div class="brand">ACADEMIA STORM · CONNECTIONS RANKING</div><h1>Minha conta</h1><p class="muted">Entre ou crie sua conta para participar dos comentários e do chat dos canais.</p>
+<section class="panel" id="accountPanel"><div class="tabs"><button id="loginTab" class="active" type="button">Entrar</button><button id="registerTab" type="button">Criar conta</button></div>
+<form id="accountForm"><label for="username">Nome de usuário</label><input id="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]+" autocomplete="username" required><label for="password">Senha</label><input id="password" type="password" minlength="8" maxlength="72" autocomplete="current-password" required><button id="submitButton" type="submit">Entrar</button></form><p class="msg" id="message" role="status"></p></section>
+<section class="panel hidden" id="loggedPanel"><h2>Você está conectado</h2><p id="userInfo"></p><button id="logoutButton" type="button">Sair da conta</button></section>
+<a href="/">← Voltar para a Academia Storm</a></main>
+<script>
+let mode='login';const $=id=>document.getElementById(id);async function api(url,options={}){const r=await fetch(url,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.message||'Não foi possível concluir.');return d}
+function setMode(next){mode=next;$('loginTab').classList.toggle('active',mode==='login');$('registerTab').classList.toggle('active',mode==='register');$('submitButton').textContent=mode==='login'?'Entrar':'Criar conta';$('password').autocomplete=mode==='login'?'current-password':'new-password';$('message').textContent=''}
+$('loginTab').onclick=()=>setMode('login');$('registerTab').onclick=()=>setMode('register');$('accountForm').onsubmit=async e=>{e.preventDefault();$('message').textContent='Aguarde...';try{const d=await api('/api/auth/'+(mode==='login'?'login':'register'),{method:'POST',body:JSON.stringify({username:$('username').value.trim(),password:$('password').value})});$('password').value='';showUser(d.user);$('message').textContent=''}catch(err){$('message').textContent=err.message}};
+function showUser(user){$('accountPanel').classList.add('hidden');$('loggedPanel').classList.remove('hidden');$('userInfo').textContent=user.username+' · '+({viewer:'Espectador',narrator:'Narrador',admin:'Administrador'}[user.role]||user.role)}
+$('logoutButton').onclick=async()=>{try{await api('/api/auth/logout',{method:'POST'});location.reload()}catch(e){$('userInfo').textContent=e.message}};
+(async()=>{try{const d=await api('/api/auth/session');if(d.authenticated)showUser(d.user)}catch(e){$('message').textContent=e.message}})();
+</script></body></html>
