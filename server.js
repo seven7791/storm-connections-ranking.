@@ -159,6 +159,11 @@ async function createLivePlatformTables() {
             slug VARCHAR(100) NOT NULL UNIQUE,
             description VARCHAR(500) NOT NULL DEFAULT '',
             banner_url TEXT,
+            avatar_url TEXT,
+            theme_bg VARCHAR(7) NOT NULL DEFAULT '#050f1d',
+            theme_panel VARCHAR(7) NOT NULL DEFAULT '#0c1d30',
+            theme_primary VARCHAR(7) NOT NULL DEFAULT '#5bbcff',
+            theme_text VARCHAR(7) NOT NULL DEFAULT '#eaf4ff',
             visibility VARCHAR(12) NOT NULL DEFAULT 'public'
                 CHECK (visibility IN ('public', 'private')),
             access_code_hash TEXT,
@@ -172,6 +177,14 @@ async function createLivePlatformTables() {
             CHECK ((visibility = 'public') OR access_code_hash IS NOT NULL)
         )
     `);
+
+    // Migração segura para canais criados antes da personalização visual.
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS theme_bg VARCHAR(7) NOT NULL DEFAULT '#050f1d'`);
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS theme_panel VARCHAR(7) NOT NULL DEFAULT '#0c1d30'`);
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS theme_primary VARCHAR(7) NOT NULL DEFAULT '#5bbcff'`);
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS theme_text VARCHAR(7) NOT NULL DEFAULT '#eaf4ff'`);
+    await pool.query(`ALTER TABLE storm_channels ADD COLUMN IF NOT EXISTS live_heartbeat_at TIMESTAMPTZ`);
 
     await pool.query(`
         CREATE TABLE IF NOT EXISTS storm_channel_moderators (
@@ -1663,7 +1676,8 @@ app.post("/api/auth/logout", (req, res) => {
 app.get("/api/channels", async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.visibility,
+            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.avatar_url,
+                   c.theme_bg, c.theme_panel, c.theme_primary, c.theme_text, c.visibility,
                    c.live_status, c.created_at, u.username AS narrator
             FROM storm_channels c JOIN storm_users u ON u.id = c.owner_user_id
             WHERE c.is_enabled = TRUE AND u.is_blocked = FALSE
@@ -1677,7 +1691,8 @@ app.get("/api/channels", async (req, res) => {
 app.get("/api/channels/:slug", async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.visibility,
+            SELECT c.id, c.title, c.slug, c.description, c.banner_url, c.avatar_url,
+                   c.theme_bg, c.theme_panel, c.theme_primary, c.theme_text, c.visibility,
                    c.live_status, c.is_enabled, c.transmission_blocked,
                    c.owner_user_id, u.username AS narrator
             FROM storm_channels c JOIN storm_users u ON u.id = c.owner_user_id
@@ -1735,21 +1750,69 @@ app.patch("/api/channels/:id", loadAccount, async (req, res) => {
         if (req.account.role !== "admin" && (Number(current.rows[0].owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator")) {
             return res.status(403).json({ error: true, message: "Somente o narrador responsável pode editar este canal." });
         }
-        const title = req.body?.title === undefined ? current.rows[0].title : cleanText(req.body.title);
-        const description = req.body?.description === undefined ? current.rows[0].description : cleanText(req.body.description).slice(0, 500);
-        const visibility = req.body?.visibility === "private" || req.body?.visibility === "public" ? req.body.visibility : current.rows[0].visibility;
-        let codeHash = current.rows[0].access_code_hash;
+        const old = current.rows[0];
+        const title = req.body?.title === undefined ? old.title : cleanText(req.body.title);
+        const description = req.body?.description === undefined ? old.description : cleanText(req.body.description).slice(0, 500);
+        const visibility = ["private", "public"].includes(req.body?.visibility) ? req.body.visibility : old.visibility;
+        const color = (value, fallback) => typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback;
+        const themeBg = color(req.body?.theme_bg, old.theme_bg || "#050f1d");
+        const themePanel = color(req.body?.theme_panel, old.theme_panel || "#0c1d30");
+        const themePrimary = color(req.body?.theme_primary, old.theme_primary || "#5bbcff");
+        const themeText = color(req.body?.theme_text, old.theme_text || "#eaf4ff");
+        let codeHash = old.access_code_hash;
         if (visibility === "private" && req.body?.access_code) {
             if (String(req.body.access_code).length < 4) return res.status(400).json({ error: true, message: "O código deve ter pelo menos 4 caracteres." });
             codeHash = await bcrypt.hash(String(req.body.access_code), 12);
         }
         if (visibility === "private" && !codeHash) return res.status(400).json({ error: true, message: "Defina um código de acesso para o canal privado." });
+        if (title.length < 3 || title.length > 80) return res.status(400).json({ error: true, message: "O nome deve ter entre 3 e 80 caracteres." });
         const updated = await pool.query(`
             UPDATE storm_channels SET title = $1, description = $2, visibility = $3,
-                access_code_hash = $4, updated_at = NOW() WHERE id = $5
-            RETURNING id, title, slug, description, visibility, live_status
-        `, [title, description, visibility, codeHash, id]);
+                access_code_hash = $4, theme_bg = $5, theme_panel = $6,
+                theme_primary = $7, theme_text = $8, updated_at = NOW()
+            WHERE id = $9
+            RETURNING id, title, slug, description, visibility, live_status,
+                      banner_url, avatar_url, theme_bg, theme_panel, theme_primary, theme_text
+        `, [title, description, visibility, codeHash, themeBg, themePanel, themePrimary, themeText, id]);
         res.json({ success: true, channel: updated.rows[0] });
+    } catch (error) { sendApiError(res, error); }
+});
+
+// Upload de avatar e banner do canal (somente narrador responsável ou administrador).
+app.post("/api/channels/:id/assets/:assetType", loadAccount, (req, res, next) => {
+    imageUpload.single("image")(req, res, error => {
+        if (error) return res.status(400).json({ error: true, message: error.message || "Não foi possível receber a imagem." });
+        next();
+    });
+}, async (req, res) => {
+    const { id, assetType } = req.params;
+    if (!validNumericId(id) || !["avatar", "banner"].includes(assetType)) {
+        return res.status(400).json({ error: true, message: "Destino de imagem inválido." });
+    }
+    if (!req.file) return res.status(400).json({ error: true, message: "Selecione uma imagem JPG, PNG, WEBP ou GIF." });
+    try {
+        const channelResult = await pool.query("SELECT id, owner_user_id FROM storm_channels WHERE id = $1", [id]);
+        if (!channelResult.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        const ownerId = Number(channelResult.rows[0].owner_user_id);
+        if (req.account.role !== "admin" && (ownerId !== Number(req.account.id) || req.account.role !== "narrator")) {
+            return res.status(403).json({ error: true, message: "Somente o narrador responsável pode alterar as imagens." });
+        }
+        if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+            return res.status(503).json({ error: true, message: "Configure as variáveis do Cloudinary no Render para enviar imagens." });
+        }
+        const uploaded = await new Promise((resolve, reject) => {
+            const stream = cloudinary.uploader.upload_stream({
+                folder: "academia-storm/channels/" + id,
+                resource_type: "image",
+                transformation: assetType === "avatar"
+                    ? [{ width: 600, height: 600, crop: "fill", gravity: "auto", quality: "auto", fetch_format: "auto" }]
+                    : [{ width: 1800, height: 600, crop: "limit", quality: "auto", fetch_format: "auto" }]
+            }, (error, result) => error ? reject(error) : resolve(result));
+            stream.end(req.file.buffer);
+        });
+        const column = assetType === "avatar" ? "avatar_url" : "banner_url";
+        const update = await pool.query(`UPDATE storm_channels SET ${column} = $1, updated_at = NOW() WHERE id = $2 RETURNING id, avatar_url, banner_url`, [uploaded.secure_url, id]);
+        res.json({ success: true, asset_type: assetType, channel: update.rows[0] });
     } catch (error) { sendApiError(res, error); }
 });
 
@@ -1933,7 +1996,7 @@ async function stopChannelLive(channelId, endedBy) {
         try { await getLiveKitRoomService().deleteRoom(roomName); } catch (error) { console.warn("Não foi possível encerrar a sala LiveKit:", error.message); }
     }
     await pool.query("UPDATE storm_live_sessions SET ended_at = NOW(), ended_by = $1 WHERE channel_id = $2 AND ended_at IS NULL", [endedBy, channelId]);
-    await pool.query("UPDATE storm_channels SET live_status = 'offline', live_room_name = NULL, updated_at = NOW() WHERE id = $1", [channelId]);
+    await pool.query("UPDATE storm_channels SET live_status = 'offline', live_room_name = NULL, live_heartbeat_at = NULL, updated_at = NOW() WHERE id = $1", [channelId]);
     io.to("channel:" + channelId).emit("live:ended", { channel_id: Number(channelId) });
 }
 
@@ -1948,7 +2011,7 @@ app.post("/api/channels/:id/live/start", loadAccount, async (req, res) => {
         if (channel.live_status === "live") return res.status(409).json({ error: true, message: "Este canal já está ao vivo." });
         const roomName = "storm-channel-" + channel.id;
         await getLiveKitRoomService(); // valida configuração antes de marcar como ao vivo
-        await pool.query("UPDATE storm_channels SET live_status = 'live', live_room_name = $1, updated_at = NOW() WHERE id = $2", [roomName, channel.id]);
+        await pool.query("UPDATE storm_channels SET live_status = 'live', live_room_name = $1, live_heartbeat_at = NOW(), updated_at = NOW() WHERE id = $2", [roomName, channel.id]);
         await pool.query("INSERT INTO storm_live_sessions (channel_id, room_name) VALUES ($1, $2)", [channel.id, roomName]);
         io.to("channels").emit("channel:updated", { channel_id: Number(channel.id), live_status: "live" });
         res.json({ success: true, live_status: "live", room_name: roomName });
@@ -1962,6 +2025,19 @@ app.post("/api/channels/:id/live/stop", loadAccount, async (req, res) => {
         if (Number(result.rows[0].owner_user_id) !== Number(req.account.id) && req.account.role !== "admin") return res.status(403).json({ error: true, message: "Você não pode encerrar esta transmissão." });
         await stopChannelLive(req.params.id, req.account.id);
         res.json({ success: true, live_status: "offline" });
+    } catch (error) { sendApiError(res, error); }
+});
+
+app.post("/api/channels/:id/live/heartbeat", loadAccount, async (req, res) => {
+    try {
+        const result = await pool.query("SELECT owner_user_id, live_status FROM storm_channels WHERE id = $1", [req.params.id]);
+        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        if (Number(result.rows[0].owner_user_id) !== Number(req.account.id) && req.account.role !== "admin") {
+            return res.status(403).json({ error: true, message: "Somente o responsável pode manter esta transmissão ativa." });
+        }
+        if (result.rows[0].live_status !== "live") return res.status(409).json({ error: true, message: "A transmissão não está ativa." });
+        await pool.query("UPDATE storm_channels SET live_heartbeat_at = NOW() WHERE id = $1", [req.params.id]);
+        res.json({ success: true });
     } catch (error) { sendApiError(res, error); }
 });
 
@@ -2123,6 +2199,29 @@ io.on("connection", socket => {
     });
     socket.on("channels:subscribe", () => socket.join("channels"));
 });
+
+// Encerra transmissões abandonadas quando o navegador do narrador perde conexão.
+setInterval(async () => {
+    try {
+        const stale = await pool.query(`
+            SELECT c.id, s.started_at
+            FROM storm_channels c
+            LEFT JOIN LATERAL (
+                SELECT started_at FROM storm_live_sessions
+                WHERE channel_id = c.id AND ended_at IS NULL
+                ORDER BY started_at DESC LIMIT 1
+            ) s ON TRUE
+            WHERE c.live_status = 'live'
+              AND COALESCE(c.live_heartbeat_at, s.started_at) < NOW() - INTERVAL '100 seconds'
+        `);
+        for (const channel of stale.rows) {
+            console.warn("Encerrando transmissão sem sinal do narrador no canal", channel.id);
+            await stopChannelLive(channel.id, null);
+        }
+    } catch (error) {
+        console.error("Falha ao verificar transmissões abandonadas:", error.message);
+    }
+}, 30000).unref?.();
 
 // ==========================================
 // PÁGINAS DO SITE
