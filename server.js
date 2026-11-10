@@ -234,11 +234,60 @@ async function createLivePlatformTables() {
         CREATE TABLE IF NOT EXISTS storm_live_sessions (
             id BIGSERIAL PRIMARY KEY,
             channel_id BIGINT NOT NULL REFERENCES storm_channels(id) ON DELETE CASCADE,
-            room_name VARCHAR(120) NOT NULL UNIQUE,
+            room_name VARCHAR(120) NOT NULL,
             started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             ended_at TIMESTAMPTZ,
             ended_by BIGINT REFERENCES storm_users(id)
         )
+    `);
+
+    // Migração: o mesmo nome de sala pode ser reutilizado em transmissões futuras.
+    await pool.query(`
+        ALTER TABLE storm_live_sessions
+        DROP CONSTRAINT IF EXISTS storm_live_sessions_room_name_key
+    `);
+    await pool.query(`
+        DROP INDEX IF EXISTS storm_live_sessions_room_name_key
+    `);
+
+    // Se existirem sessões abertas duplicadas, mantém somente a mais recente.
+    await pool.query(`
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY channel_id
+                       ORDER BY started_at DESC, id DESC
+                   ) AS position
+            FROM storm_live_sessions
+            WHERE ended_at IS NULL
+        )
+        UPDATE storm_live_sessions AS sessions
+        SET ended_at = NOW()
+        FROM ranked
+        WHERE sessions.id = ranked.id
+          AND ranked.position > 1
+    `);
+
+    await pool.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS storm_live_sessions_one_active_per_channel
+        ON storm_live_sessions (channel_id)
+        WHERE ended_at IS NULL
+    `);
+
+    // Libera canais que ficaram presos como "ao vivo" sem sessão ativa.
+    await pool.query(`
+        UPDATE storm_channels AS channels
+        SET live_status = 'offline',
+            live_room_name = NULL,
+            live_heartbeat_at = NULL,
+            updated_at = NOW()
+        WHERE channels.live_status = 'live'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM storm_live_sessions AS sessions
+              WHERE sessions.channel_id = channels.id
+                AND sessions.ended_at IS NULL
+          )
     `);
 
     console.log("Tabelas da plataforma de transmissões verificadas.");
@@ -1989,33 +2038,145 @@ function getLiveKitRoomService() {
 }
 
 async function stopChannelLive(channelId, endedBy) {
-    const current = await pool.query("SELECT live_room_name FROM storm_channels WHERE id = $1", [channelId]);
+    const current = await pool.query(
+        "SELECT live_room_name FROM storm_channels WHERE id = $1",
+        [channelId]
+    );
     if (!current.rowCount) return;
+
     const roomName = current.rows[0].live_room_name;
-    if (roomName && process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET) {
-        try { await getLiveKitRoomService().deleteRoom(roomName); } catch (error) { console.warn("Não foi possível encerrar a sala LiveKit:", error.message); }
+
+    // A sala pode já ter sido removida no LiveKit; isso não impede a limpeza do banco.
+    if (
+        roomName &&
+        process.env.LIVEKIT_URL &&
+        process.env.LIVEKIT_API_KEY &&
+        process.env.LIVEKIT_API_SECRET
+    ) {
+        try {
+            await getLiveKitRoomService().deleteRoom(roomName);
+        } catch (error) {
+            console.warn("Sala LiveKit já encerrada ou indisponível:", error.message);
+        }
     }
-    await pool.query("UPDATE storm_live_sessions SET ended_at = NOW(), ended_by = $1 WHERE channel_id = $2 AND ended_at IS NULL", [endedBy, channelId]);
-    await pool.query("UPDATE storm_channels SET live_status = 'offline', live_room_name = NULL, live_heartbeat_at = NULL, updated_at = NOW() WHERE id = $1", [channelId]);
-    io.to("channel:" + channelId).emit("live:ended", { channel_id: Number(channelId) });
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query(
+            `UPDATE storm_live_sessions
+             SET ended_at = NOW(), ended_by = $1
+             WHERE channel_id = $2 AND ended_at IS NULL`,
+            [endedBy, channelId]
+        );
+        await client.query(
+            `UPDATE storm_channels
+             SET live_status = 'offline',
+                 live_room_name = NULL,
+                 live_heartbeat_at = NULL,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [channelId]
+        );
+        await client.query("COMMIT");
+    } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+    } finally {
+        client.release();
+    }
+
+    io.to("channel:" + channelId).emit("live:ended", {
+        channel_id: Number(channelId)
+    });
+    io.to("channels").emit("channel:updated", {
+        channel_id: Number(channelId),
+        live_status: "offline"
+    });
 }
 
 app.post("/api/channels/:id/live/start", loadAccount, async (req, res) => {
+    let client;
     try {
-        const result = await pool.query("SELECT * FROM storm_channels WHERE id = $1", [req.params.id]);
-        if (!result.rowCount) return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        // Valida as credenciais antes de alterar qualquer estado no banco.
+        getLiveKitRoomService();
+
+        client = await pool.connect();
+        await client.query("BEGIN");
+
+        // O bloqueio impede duas tentativas simultâneas para o mesmo canal.
+        const result = await client.query(
+            "SELECT * FROM storm_channels WHERE id = $1 FOR UPDATE",
+            [req.params.id]
+        );
+
+        if (!result.rowCount) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ error: true, message: "Canal não encontrado." });
+        }
+
         const channel = result.rows[0];
-        if (req.account.role !== "admin" && (Number(channel.owner_user_id) !== Number(req.account.id) || req.account.role !== "narrator")) return res.status(403).json({ error: true, message: "Somente o narrador deste canal pode transmitir." });
-        if (!channel.is_enabled) return res.status(403).json({ error: true, message: "Este canal está desativado." });
-        if (channel.transmission_blocked || req.account.is_blocked) return res.status(403).json({ error: true, message: "A transmissão deste canal está bloqueada." });
-        if (channel.live_status === "live") return res.status(409).json({ error: true, message: "Este canal já está ao vivo." });
+
+        if (
+            req.account.role !== "admin" &&
+            (Number(channel.owner_user_id) !== Number(req.account.id) ||
+             req.account.role !== "narrator")
+        ) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: true, message: "Somente o narrador deste canal pode transmitir." });
+        }
+        if (!channel.is_enabled) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: true, message: "Este canal está desativado." });
+        }
+        if (channel.transmission_blocked || req.account.is_blocked) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ error: true, message: "A transmissão deste canal está bloqueada." });
+        }
+
+        const activeSession = await client.query(
+            `SELECT id FROM storm_live_sessions
+             WHERE channel_id = $1 AND ended_at IS NULL
+             LIMIT 1`,
+            [channel.id]
+        );
+
+        if (activeSession.rowCount) {
+            await client.query("ROLLBACK");
+            return res.status(409).json({ error: true, message: "Este canal já possui uma transmissão ativa." });
+        }
+
         const roomName = "storm-channel-" + channel.id;
-        await getLiveKitRoomService(); // valida configuração antes de marcar como ao vivo
-        await pool.query("UPDATE storm_channels SET live_status = 'live', live_room_name = $1, live_heartbeat_at = NOW(), updated_at = NOW() WHERE id = $2", [roomName, channel.id]);
-        await pool.query("INSERT INTO storm_live_sessions (channel_id, room_name) VALUES ($1, $2)", [channel.id, roomName]);
-        io.to("channels").emit("channel:updated", { channel_id: Number(channel.id), live_status: "live" });
-        res.json({ success: true, live_status: "live", room_name: roomName });
-    } catch (error) { sendApiError(res, error); }
+
+        // A sessão e o status do canal são gravados na mesma transação.
+        await client.query(
+            `INSERT INTO storm_live_sessions (channel_id, room_name)
+             VALUES ($1, $2)`,
+            [channel.id, roomName]
+        );
+        await client.query(
+            `UPDATE storm_channels
+             SET live_status = 'live',
+                 live_room_name = $1,
+                 live_heartbeat_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [roomName, channel.id]
+        );
+
+        await client.query("COMMIT");
+
+        io.to("channels").emit("channel:updated", {
+            channel_id: Number(channel.id),
+            live_status: "live"
+        });
+        return res.json({ success: true, live_status: "live", room_name: roomName });
+    } catch (error) {
+        if (client) await client.query("ROLLBACK").catch(() => {});
+        return sendApiError(res, error);
+    } finally {
+        if (client) client.release();
+    }
 });
 
 app.post("/api/channels/:id/live/stop", loadAccount, async (req, res) => {
