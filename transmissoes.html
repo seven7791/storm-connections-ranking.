@@ -11,3 +11,4 @@ $('visibility').onchange=()=>{$('codeWrap').classList.toggle('hidden',$('visibil
 $('createForm').onsubmit=async e=>{e.preventDefault();$('createMessage').textContent='Criando canal...';try{const d=await api('/api/channels',{method:'POST',body:JSON.stringify({title:$('title').value.trim(),description:$('description').value.trim(),visibility:$('visibility').value,access_code:$('accessCode').value})});$('createMessage').textContent='Canal criado! Abrindo...';location.href='/canal/'+encodeURIComponent(d.channel.slug)}catch(err){$('createMessage').textContent=err.message}};
 (async()=>{await load();try{const s=await api('/api/auth/session');if(s.authenticated&&['narrator','admin'].includes(s.user.role))$('createPanel').classList.remove('hidden')}catch(e){} })();
 </script></body></html>
+.
